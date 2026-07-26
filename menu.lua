@@ -1,12 +1,12 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.7.1 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.7.2 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist и логи синхронизируются
 --  между клиентами без пользовательского серверного Lua.
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.7.1"
+local SCRIPT_VERSION = "v1.7.2"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -48,6 +48,35 @@ local hook_Stats     = GenSafeHook()
 local hook_Notes3D   = GenSafeHook()
 local hook_Notes3D_HUD = GenSafeHook()
 local hook_BodyFX    = GenSafeHook()
+
+-- The skybox feature is kept in one table so the root Lua chunk stays well
+-- below LuaJIT's 200-local limit.
+local SkyboxFeature = {
+    configPath = CLIENT_DATA_DIR .. "/skybox.json",
+    saveTimer = "UnisonoMT_SkyboxSave",
+    preDrawHook = GenSafeHook(),
+    postDrawHook = GenSafeHook(),
+    config = {
+        enabled = false,
+        sky = "painted",
+        yaw = 0,
+        brightness = 1,
+    },
+    presets = {
+        {name = "GMod Painted", sky = "painted"},
+        {name = "Ясный день", sky = "sky_day01_01"},
+        {name = "Светлый день", sky = "sky_day01_04"},
+        {name = "Облачный день", sky = "sky_day02_05"},
+        {name = "Тёплый закат", sky = "sky_day02_09"},
+        {name = "Сумерки", sky = "sky_day02_10"},
+        {name = "Пыльное небо", sky = "sky_day03_06"},
+        {name = "Северное сияние", sky = "sky_borealis01"},
+        {name = "Пустошь", sky = "sky_wasteland02"},
+    },
+    suffixes = {"ft", "bk", "lf", "rt", "up", "dn"},
+    materials = {},
+    lastError = nil,
+}
 
 local ESP_Enabled = false
 local ESP_MaxDistance = 1100
@@ -555,6 +584,209 @@ local function LoadBodyFXConfig()
 end
 
 LoadBodyFXConfig()
+
+-- ==================== 5.1 ЛОКАЛЬНЫЙ SKYBOX ====================
+function SkyboxFeature.SanitizeSkyName(value)
+    value = string.Trim(tostring(value or ""))
+    if value == "" or #value > 64 then return nil end
+    if not string.match(value, "^[%w_%-]+$") then return nil end
+    return string.lower(value)
+end
+
+function SkyboxFeature.GetDisplayName(skyName)
+    skyName = SkyboxFeature.SanitizeSkyName(skyName) or "painted"
+    for _, preset in ipairs(SkyboxFeature.presets) do
+        if preset.sky == skyName then
+            return preset.name .. " (" .. preset.sky .. ")"
+        end
+    end
+    return "Пользовательский (" .. skyName .. ")"
+end
+
+function SkyboxFeature.ResolveMaterials(skyName, forceRefresh)
+    skyName = SkyboxFeature.SanitizeSkyName(skyName)
+    if not skyName then return nil, "Некорректное имя skybox." end
+    if forceRefresh then SkyboxFeature.materials[skyName] = nil end
+
+    local cached = SkyboxFeature.materials[skyName]
+    if cached then return cached.value, cached.error end
+
+    local loaded = {}
+    for _, suffix in ipairs(SkyboxFeature.suffixes) do
+        local materialPath = "skybox/" .. skyName .. suffix
+        local material = Material(materialPath)
+        if not material or material:IsError() then
+            local err = "Не найдена грань " .. materialPath .. "."
+            SkyboxFeature.materials[skyName] = {error = err}
+            SkyboxFeature.lastError = err
+            return nil, err
+        end
+        loaded[suffix] = material
+    end
+
+    SkyboxFeature.materials[skyName] = {value = loaded}
+    SkyboxFeature.lastError = nil
+    return loaded
+end
+
+function SkyboxFeature.Save()
+    local payload = {
+        version = 1,
+        enabled = SkyboxFeature.config.enabled == true,
+        sky = SkyboxFeature.config.sky,
+        yaw = math.Clamp(tonumber(SkyboxFeature.config.yaw) or 0, 0, 360),
+        brightness = math.Clamp(tonumber(SkyboxFeature.config.brightness) or 1, 0.2, 1),
+    }
+    file.CreateDir(CLIENT_DATA_DIR)
+    file.Write(SkyboxFeature.configPath, util.TableToJSON(payload, true) or "{}")
+end
+
+function SkyboxFeature.QueueSave()
+    timer.Create(SkyboxFeature.saveTimer, 0.25, 1, SkyboxFeature.Save)
+end
+
+function SkyboxFeature.Load()
+    local raw = file.Read(SkyboxFeature.configPath, "DATA")
+    local data = raw and util.JSONToTable(raw) or nil
+    if not istable(data) then return false end
+
+    local skyName = SkyboxFeature.SanitizeSkyName(data.sky)
+    if skyName then SkyboxFeature.config.sky = skyName end
+    SkyboxFeature.config.yaw = math.Clamp(tonumber(data.yaw) or 0, 0, 360)
+    SkyboxFeature.config.brightness = math.Clamp(tonumber(data.brightness) or 1, 0.2, 1)
+    SkyboxFeature.config.enabled = data.enabled == true
+    return true
+end
+
+function SkyboxFeature.Apply(skyName, yaw, brightness)
+    skyName = SkyboxFeature.SanitizeSkyName(skyName)
+    if not skyName then
+        return false, "Имя может содержать только буквы, цифры, _ и -."
+    end
+
+    local materials, err = SkyboxFeature.ResolveMaterials(skyName, true)
+    if not materials then return false, err end
+
+    SkyboxFeature.config.sky = skyName
+    SkyboxFeature.config.yaw = math.Clamp(tonumber(yaw) or SkyboxFeature.config.yaw, 0, 360)
+    SkyboxFeature.config.brightness = math.Clamp(
+        tonumber(brightness) or SkyboxFeature.config.brightness,
+        0.2,
+        1
+    )
+    SkyboxFeature.config.enabled = true
+    SkyboxFeature.lastError = nil
+    SkyboxFeature.QueueSave()
+    return true, "Локальное небо применено."
+end
+
+function SkyboxFeature.Disable()
+    SkyboxFeature.config.enabled = false
+    SkyboxFeature.lastError = nil
+    SkyboxFeature.QueueSave()
+end
+
+function SkyboxFeature.Reset()
+    SkyboxFeature.config.enabled = false
+    SkyboxFeature.config.sky = "painted"
+    SkyboxFeature.config.yaw = 0
+    SkyboxFeature.config.brightness = 1
+    SkyboxFeature.materials = {}
+    SkyboxFeature.lastError = nil
+    SkyboxFeature.Save()
+end
+
+function SkyboxFeature.EnsureFaces()
+    if SkyboxFeature.faces then return end
+    local size = 1024
+    SkyboxFeature.faces = {
+        ft = {
+            Vector(size, size, size),
+            Vector(size, -size, size),
+            Vector(size, -size, -size),
+            Vector(size, size, -size),
+        },
+        bk = {
+            Vector(-size, -size, size),
+            Vector(-size, size, size),
+            Vector(-size, size, -size),
+            Vector(-size, -size, -size),
+        },
+        lf = {
+            Vector(size, size, size),
+            Vector(-size, size, size),
+            Vector(-size, size, -size),
+            Vector(size, size, -size),
+        },
+        rt = {
+            Vector(-size, -size, size),
+            Vector(size, -size, size),
+            Vector(size, -size, -size),
+            Vector(-size, -size, -size),
+        },
+        up = {
+            Vector(-size, size, size),
+            Vector(size, size, size),
+            Vector(size, -size, size),
+            Vector(-size, -size, size),
+        },
+        dn = {
+            Vector(-size, -size, -size),
+            Vector(size, -size, -size),
+            Vector(size, size, -size),
+            Vector(-size, size, -size),
+        },
+    }
+end
+
+function SkyboxFeature.Draw()
+    if not SkyboxFeature.config.enabled then return false end
+
+    local materials, err = SkyboxFeature.ResolveMaterials(SkyboxFeature.config.sky)
+    if not materials then
+        SkyboxFeature.lastError = err
+        return false
+    end
+
+    SkyboxFeature.EnsureFaces()
+    local eyeAngles = EyeAngles()
+    local viewAngles = Angle(
+        eyeAngles.p,
+        eyeAngles.y + SkyboxFeature.config.yaw,
+        eyeAngles.r
+    )
+    local brightness = math.Clamp(
+        math.floor((tonumber(SkyboxFeature.config.brightness) or 1) * 255),
+        0,
+        255
+    )
+    local color = Color(brightness, brightness, brightness, 255)
+
+    render.OverrideDepthEnable(true, false)
+    render.SetLightingMode(2)
+    render.CullMode(MATERIAL_CULLMODE_NONE or 2)
+    cam.Start3D(vector_origin, viewAngles)
+        for _, suffix in ipairs(SkyboxFeature.suffixes) do
+            local face = SkyboxFeature.faces[suffix]
+            render.SetMaterial(materials[suffix])
+            render.DrawQuad(face[1], face[2], face[3], face[4], color)
+        end
+    cam.End3D()
+    render.CullMode(MATERIAL_CULLMODE_CCW or 0)
+    render.SetLightingMode(0)
+    render.OverrideDepthEnable(false, false)
+    return true
+end
+
+SkyboxFeature.Load()
+
+hook.Add("PreDrawSkyBox", SkyboxFeature.preDrawHook, function()
+    if SkyboxFeature.Draw() then return true end
+end)
+
+hook.Add("PostDraw2DSkyBox", SkyboxFeature.postDrawHook, function()
+    if SkyboxFeature.config.enabled then SkyboxFeature.Draw() end
+end)
 
 local function IsWhitelistAdmin()
     local lp = LocalPlayer()
@@ -1586,6 +1818,8 @@ function MultiTool_UnloadSelf(reason)
     SafeRemoveHook("PostDrawTranslucentRenderables", hook_Notes3D)
     SafeRemoveHook("HUDPaint", hook_Notes3D_HUD)
     SafeRemoveHook("PostDrawTranslucentRenderables", hook_BodyFX)
+    SafeRemoveHook("PreDrawSkyBox", SkyboxFeature.preDrawHook)
+    SafeRemoveHook("PostDraw2DSkyBox", SkyboxFeature.postDrawHook)
     SafeRemoveHook("OnScreenSizeChanged", "Unisono_StarFieldResize")
     SafeRemoveHook("PlayerBindPress", "Unisono_MenuBind")
     SafeRemoveHook("OnPauseMenuShow", MENU_ESCAPE_HOOK)
@@ -1602,11 +1836,13 @@ function MultiTool_UnloadSelf(reason)
         ADMIN_LOG_SYNC_TIMER,
         BODY_FX_SAVE_TIMER,
         CLIENT_COMMAND_POLL_TIMER,
+        SkyboxFeature.saveTimer,
     }) do
         if timer.Exists(timerName) then timer.Remove(timerName) end
     end
     SaveWhitelistCache()
     SaveBodyFXConfig()
+    SkyboxFeature.Save()
     if SaveProcessedClientCommands then SaveProcessedClientCommands() end
     ClearBodyFXTrails()
     if IsWhitelistAdmin() then SaveAdminUsageLogs() end
@@ -2586,7 +2822,143 @@ local function BuildShadersPanel()
     suppressInitialSelectionLog = false
 end
 
--- 15.2 ШРИФТЫ
+-- 15.2 ЛОКАЛЬНЫЙ SKYBOX
+local function BuildSkyboxPanel()
+    ClearContent()
+    local t = GetTheme()
+
+    ULXLabel(contentPanel, 20, 18, "Локальная смена скайбокса")
+
+    local description = vgui.Create("DLabel", contentPanel)
+    description:SetPos(20, 44)
+    description:SetSize(536, 38)
+    description:SetWrap(true)
+    description:SetText(
+        "Небо меняется только на этом клиенте. Сервер и остальные игроки "
+        .. "продолжают видеть skybox карты."
+    )
+    description:SetTextColor(t.text)
+
+    ULXLabel(contentPanel, 20, 92, "Готовый пресет:")
+    local combo = vgui.Create("DComboBox", contentPanel)
+    combo:SetPos(20, 116)
+    combo:SetSize(536, 28)
+
+    local selectedSky = SkyboxFeature.config.sky
+    for _, preset in ipairs(SkyboxFeature.presets) do
+        combo:AddChoice(
+            preset.name .. "  •  " .. preset.sky,
+            preset.sky,
+            preset.sky == SkyboxFeature.config.sky
+        )
+    end
+
+    ULXLabel(contentPanel, 20, 154, "Имя другого установленного skybox:")
+    local customEntry = vgui.Create("DTextEntry", contentPanel)
+    customEntry:SetPos(20, 178)
+    customEntry:SetSize(536, 26)
+    customEntry:SetText(SkyboxFeature.config.sky)
+    customEntry:SetPlaceholderText("Например: sky_day01_01")
+
+    combo.OnSelect = function(_, _, _, data)
+        selectedSky = tostring(data or selectedSky)
+        customEntry:SetText(selectedSky)
+    end
+
+    local yawSlider = vgui.Create("DNumSlider", contentPanel)
+    yawSlider:SetPos(20, 214)
+    yawSlider:SetSize(536, 42)
+    yawSlider:SetText("Поворот по горизонту")
+    yawSlider:SetMin(0)
+    yawSlider:SetMax(360)
+    yawSlider:SetDecimals(0)
+    yawSlider:SetValue(SkyboxFeature.config.yaw)
+    yawSlider.Label:SetTextColor(t.text)
+
+    local brightnessSlider = vgui.Create("DNumSlider", contentPanel)
+    brightnessSlider:SetPos(20, 264)
+    brightnessSlider:SetSize(536, 42)
+    brightnessSlider:SetText("Яркость")
+    brightnessSlider:SetMin(0.2)
+    brightnessSlider:SetMax(1)
+    brightnessSlider:SetDecimals(2)
+    brightnessSlider:SetValue(SkyboxFeature.config.brightness)
+    brightnessSlider.Label:SetTextColor(t.text)
+
+    local status = vgui.Create("DLabel", contentPanel)
+    status:SetPos(20, 382)
+    status:SetSize(536, 42)
+    status:SetWrap(true)
+
+    local function SetStatus(message, isError)
+        if not IsValid(status) then return end
+        status:SetText(message)
+        status:SetTextColor(isError and Color(235, 90, 90) or Color(90, 225, 145))
+    end
+
+    local function ApplySelectedSky()
+        local requestedSky = string.Trim(customEntry:GetValue())
+        if requestedSky == "" then requestedSky = selectedSky end
+
+        local ok, message = SkyboxFeature.Apply(
+            requestedSky,
+            yawSlider:GetValue(),
+            brightnessSlider:GetValue()
+        )
+        if not ok then
+            SetStatus("Не применено: " .. tostring(message), true)
+            Notify(tostring(message), true)
+            LogFeatureUsage("skybox.apply", tostring(requestedSky), "error")
+            return
+        end
+
+        selectedSky = SkyboxFeature.config.sky
+        customEntry:SetText(selectedSky)
+        SetStatus(
+            "Активно: " .. SkyboxFeature.GetDisplayName(selectedSky)
+            .. " • поворот " .. tostring(math.floor(SkyboxFeature.config.yaw)) .. "°",
+            false
+        )
+        Notify("Локальный skybox применён")
+        LogFeatureUsage(
+            "skybox.apply",
+            SkyboxFeature.GetDisplayName(selectedSky)
+            .. " • яркость " .. string.format("%.2f", SkyboxFeature.config.brightness),
+            "success"
+        )
+    end
+
+    ULXButton(contentPanel, 20, 326, 255, 32, "Применить локально", ApplySelectedSky)
+    ULXButton(contentPanel, 301, 326, 255, 32, "Вернуть небо карты", function()
+        local oldSky = SkyboxFeature.config.sky
+        SkyboxFeature.Disable()
+        SetStatus("Используется стандартное небо текущей карты.", false)
+        Notify("Стандартное небо карты восстановлено")
+        LogFeatureUsage("skybox.restore", SkyboxFeature.GetDisplayName(oldSky), "success")
+    end)
+
+    customEntry.OnEnter = ApplySelectedSky
+
+    local hint = vgui.Create("DLabel", contentPanel)
+    hint:SetPos(20, 438)
+    hint:SetSize(536, 36)
+    hint:SetWrap(true)
+    hint:SetText("Пресеты используют уже установленные материалы GMod/Source; настройка сохраняется автоматически.")
+    hint:SetTextColor(Color(170, 180, 195))
+
+    if SkyboxFeature.config.enabled then
+        local _, err = SkyboxFeature.ResolveMaterials(SkyboxFeature.config.sky)
+        if err then
+            SetStatus("Не удалось загрузить сохранённое небо: " .. err, true)
+        else
+            SetStatus("Активно: " .. SkyboxFeature.GetDisplayName(SkyboxFeature.config.sky), false)
+        end
+    else
+        SetStatus("Используется стандартное небо текущей карты.", false)
+    end
+end
+
+-- 15.3 ШРИФТЫ
 local function BuildFontPanel()
     ClearContent()
     ULXLabel(contentPanel, 20, 20, "Настройки шрифтов")
@@ -2616,7 +2988,7 @@ local function BuildFontPanel()
     end)
 end
 
--- 15.3 ФИЗГАН
+-- 15.4 ФИЗГАН
 local function BuildPhysgunPanel()
     ClearContent()
     ULXLabel(contentPanel, 20, 20, "Физган")
@@ -2643,7 +3015,7 @@ local function BuildPhysgunPanel()
     end)
 end
 
--- 15.3.1 ЭФФЕКТЫ ТЕЛА
+-- 15.5 ЭФФЕКТЫ ТЕЛА
 local function BuildBodyFXPanel()
     ClearContent()
     local lp = LocalPlayer()
@@ -2975,7 +3347,7 @@ local function BuildBodyFXPanel()
     scroll:GetCanvas():SetTall(672)
 end
 
--- 15.4 СКРИПТЫ
+-- 15.6 СКРИПТЫ
 local function BuildScriptsPanel(parent)
     local panel = parent or contentPanel
     ClearContent(panel)
@@ -3019,7 +3391,7 @@ local function BuildScriptsPanel(parent)
     ULXLabel(panel, 20, y+10, "Примечание: если галочка не сохраняется — сервер блокирует CVAR.", ThemeCol("text"))
 end
 
--- 15.5 ЛОКАЛЬНАЯ КОНСОЛЬ
+-- 15.7 ЛОКАЛЬНАЯ КОНСОЛЬ
 local function BuildConsolePanel()
     ClearContent()
     ULXLabel(contentPanel, 20, 10, "Локальная консоль (Lua + Клиентские команды)")
@@ -3224,7 +3596,7 @@ local function BuildConsolePanel()
     ULXButton(contentPanel, 20, 380, 120, 24, "Очистить", function() output:SetText("") end)
 end
 
--- 15.6 УПРАВЛЕНИЕ WHITELIST
+-- 15.8 УПРАВЛЕНИЕ WHITELIST
 BuildWhitelistAdminPanel = function(parent)
     local panel = parent or contentPanel
     ClearContent(panel)
@@ -3473,7 +3845,7 @@ BuildWhitelistAdminPanel = function(parent)
     )
 end
 
--- 15.7 Q-МЕНЮ
+-- 15.9 Q-МЕНЮ
 local function BuildQMenuPanel()
     ClearContent()
     ULXLabel(contentPanel, 20, 20, "Цвет Q-меню")
@@ -3515,7 +3887,7 @@ local function SendSafeChatCommand(cmd)
     end)
 end
 
--- 15.8 ЧАТ
+-- 15.10 ЧАТ
 local function BuildChatPanel()
     ClearContent()
     ULXLabel(contentPanel, 20, 20, "Настройки чата")
@@ -3540,7 +3912,7 @@ local function BuildChatPanel()
     end)
 end
 
--- 15.9 3D ЗАМЕТКИ
+-- 15.11 3D ЗАМЕТКИ
 local function BuildNotesPanel()
     ClearContent()
     if not HasAccess(LocalPlayer():SteamID(), "NOTES") then
@@ -3724,7 +4096,7 @@ local function BuildNotesPanel()
     RefreshNotesList()
 end
 
--- 15.9 СТАТИСТИКА
+-- 15.12 СТАТИСТИКА
 local function BuildStatsPanel()
     ClearContent()
     if not HasAccess(LocalPlayer():SteamID(), "STATS") then
@@ -3784,7 +4156,7 @@ local function BuildStatsPanel()
     end)
 end
 
--- 15.10 OOPS
+-- 15.13 OOPS
 local function BuildOopsPanel()
     ClearContent()
     ULXLabel(contentPanel, 20, 20, "Сброс настроек")
@@ -3824,12 +4196,14 @@ local function BuildOopsPanel()
         BodyFXConfig.throughWalls = false
         ClearBodyFXTrails()
         SaveBodyFXConfig()
+        SkyboxFeature.Reset()
         MapNotes = {}; MapNotes_NextID = 1
         SessionStats = { sessionStart=CurTime(), kills=0, deaths=0, damageTaken=0, damageDealt=0, distanceTraveled=0, jumps=0, lastPos=Vector(0,0,0), onGround=true }
         if IsValid(g_SpawnMenu) and g_SpawnMenu.OriginalPaint then g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
     end)
     AddReset("Только ESP", "esp.reset", function() ESP_Enabled = false; ESP_MaxDistance = 1100 end)
     AddReset("Только шейдеры", "shader.reset", function() ShaderStates = {}; ActiveShaderIndex = 1; ActivateShader(1) end)
+    AddReset("Только скайбокс", "skybox.reset", SkyboxFeature.Reset)
     AddReset("Только эффекты тела", "bodyfx.reset", function()
         BodyFXConfig.enabled = false
         BodyFXConfig.preset = "right_hand"
@@ -3851,7 +4225,7 @@ local function BuildOopsPanel()
     AddReset("Только заметки", "notes.clear", function() MapNotes = {}; MapNotes_NextID = 1 end)
 end
 
--- 15.11 ТЕМЫ
+-- 15.14 ТЕМЫ
 local function BuildThemesPanel()
     ClearContent()
     ULXLabel(contentPanel, 20, 20, "Настройка темы")
@@ -3876,7 +4250,7 @@ local function BuildThemesPanel()
     ULXLabel(contentPanel, 20, y+10, "Тема применяется ко всему интерфейсу мульти-тула.", ThemeCol("text"))
 end
 
--- 15.12 ESP (!Не работает!)
+-- 15.15 ESP (!Не работает!)
 local function BuildESPPanel()
     ClearContent()
     if not HasAccess(LocalPlayer():SteamID(), "NOT_WORKING") then
@@ -3948,7 +4322,7 @@ local function BuildESPPanel()
     end)
 end
 
--- 15.13 ИССЛЕДОВАТЕЛЬ СЕРВЕРА
+-- 15.16 ИССЛЕДОВАТЕЛЬ СЕРВЕРА
 local function BuildServerExplorerPanel(parent)
     local panel = parent or contentPanel
     ClearContent(panel)
@@ -4135,7 +4509,7 @@ local function BuildServerExplorerPanel(parent)
     end)
 end
 
--- 15.14 ADMIN
+-- 15.17 ADMIN
 BuildAdminPanel = function(initialSection)
     ClearContent()
     if not IsWhitelistAdmin() then
@@ -4313,6 +4687,7 @@ function ToggleMenu()
     local categories = {
         {"!Не работает!",  BuildESPPanel},
         {"Шейдеры",        BuildShadersPanel},
+        {"Скайбокс",        BuildSkyboxPanel},
         {"Настройки шрифта", BuildFontPanel},
         {"Физган",         BuildPhysgunPanel},
         {"Эффекты тела",   BuildBodyFXPanel},
@@ -4339,7 +4714,7 @@ function ToggleMenu()
     }
 
     if IsWhitelistAdmin() then
-        table.insert(categories, 5, {"Admin", BuildAdminPanel})
+        table.insert(categories, 6, {"Admin", BuildAdminPanel})
     end
 
     local y = 6
