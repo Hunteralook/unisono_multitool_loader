@@ -1,12 +1,12 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.6.1 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.7.0 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist и логи синхронизируются
 --  между клиентами без пользовательского серверного Lua.
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.6.1-client-control"
+local SCRIPT_VERSION = "v1.7.0-body-fx-pack"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -76,6 +76,9 @@ local BodyFXConfig = {
     length = 125,
     wiggle = 10,
     speed = 8,
+    intensity = 1,
+    particles = true,
+    sourceGlow = true,
     dynamicLight = true,
     throughWalls = false,
 }
@@ -89,6 +92,7 @@ local BodyFXStyles = {
         name = "Электричество",
         material = Material("trails/electric"),
         noise = 1.0,
+        sparks = true,
     },
     energy = {
         name = "Энергетическая лента",
@@ -100,6 +104,65 @@ local BodyFXStyles = {
         material = Material("trails/laser"),
         noise = 0.65,
         rainbow = true,
+    },
+    plasma = {
+        name = "Плазменная спираль",
+        material = Material("trails/laser"),
+        noise = 0.55,
+        helix = true,
+    },
+    fire = {
+        name = "Огненный след",
+        material = Material("trails/laser"),
+        noise = 1.15,
+        lift = 0.3,
+        embers = true,
+        paletteSpeed = 8,
+        palette = {
+            Color(255, 245, 150),
+            Color(255, 150, 30),
+            Color(235, 55, 15),
+        },
+    },
+    frost = {
+        name = "Ледяные кристаллы",
+        material = Material("trails/laser"),
+        noise = 0.25,
+        shards = true,
+        paletteSpeed = 3,
+        palette = {
+            Color(245, 255, 255),
+            Color(120, 225, 255),
+            Color(45, 120, 255),
+        },
+    },
+    void = {
+        name = "Пустотная орбита",
+        material = Material("trails/laser"),
+        noise = 0.7,
+        orbit = true,
+        paletteSpeed = 4,
+        palette = {
+            Color(225, 90, 255),
+            Color(110, 35, 230),
+            Color(35, 10, 95),
+        },
+    },
+    pulse = {
+        name = "Импульсные кольца",
+        material = Material("trails/laser"),
+        noise = 0.12,
+        rings = true,
+        maxProgress = 0.55,
+        tailAlpha = 0.45,
+    },
+    sparks = {
+        name = "Искровой разряд",
+        material = Material("trails/electric"),
+        noise = 1.55,
+        sparks = true,
+        maxProgress = 0.65,
+        tailAlpha = 0.55,
     },
 }
 local BodyFXBonePresets = {
@@ -148,9 +211,92 @@ local BodyFXBonePresets = {
             {"ValveBiped.Bip01_L_Foot"},
         },
     },
+    right_foot = {
+        name = "Правая стопа",
+        slots = {
+            {"ValveBiped.Bip01_R_Foot"},
+        },
+    },
+    left_foot = {
+        name = "Левая стопа",
+        slots = {
+            {"ValveBiped.Bip01_L_Foot"},
+        },
+    },
+    shoulders = {
+        name = "Оба плеча",
+        slots = {
+            {"ValveBiped.Bip01_R_UpperArm", "ValveBiped.Bip01_R_Clavicle"},
+            {"ValveBiped.Bip01_L_UpperArm", "ValveBiped.Bip01_L_Clavicle"},
+        },
+    },
+    elbows = {
+        name = "Оба локтя",
+        slots = {
+            {"ValveBiped.Bip01_R_Forearm", "ValveBiped.Bip01_R_UpperArm"},
+            {"ValveBiped.Bip01_L_Forearm", "ValveBiped.Bip01_L_UpperArm"},
+        },
+    },
+    knees = {
+        name = "Оба колена",
+        slots = {
+            {"ValveBiped.Bip01_R_Calf", "ValveBiped.Bip01_R_Thigh"},
+            {"ValveBiped.Bip01_L_Calf", "ValveBiped.Bip01_L_Thigh"},
+        },
+    },
+    arms = {
+        name = "Руки целиком",
+        slots = {
+            {"ValveBiped.Bip01_R_UpperArm"},
+            {"ValveBiped.Bip01_R_Forearm"},
+            {"ValveBiped.Bip01_R_Hand", "ValveBiped.Anim_Attachment_RH"},
+            {"ValveBiped.Bip01_L_UpperArm"},
+            {"ValveBiped.Bip01_L_Forearm"},
+            {"ValveBiped.Bip01_L_Hand"},
+        },
+    },
+    legs = {
+        name = "Ноги целиком",
+        slots = {
+            {"ValveBiped.Bip01_R_Thigh"},
+            {"ValveBiped.Bip01_R_Calf"},
+            {"ValveBiped.Bip01_R_Foot"},
+            {"ValveBiped.Bip01_L_Thigh"},
+            {"ValveBiped.Bip01_L_Calf"},
+            {"ValveBiped.Bip01_L_Foot"},
+        },
+    },
+    spine = {
+        name = "Позвоночник",
+        slots = {
+            {"ValveBiped.Bip01_Pelvis"},
+            {"ValveBiped.Bip01_Spine"},
+            {"ValveBiped.Bip01_Spine2", "ValveBiped.Bip01_Spine1"},
+            {"ValveBiped.Bip01_Spine4", "ValveBiped.Bip01_Neck1"},
+        },
+    },
+    head_chest = {
+        name = "Голова и грудь",
+        slots = {
+            {"ValveBiped.Bip01_Head1"},
+            {"ValveBiped.Bip01_Spine2", "ValveBiped.Bip01_Spine"},
+        },
+    },
     all_extremities = {
         name = "Кисти и стопы",
         slots = {
+            {"ValveBiped.Bip01_R_Hand", "ValveBiped.Anim_Attachment_RH"},
+            {"ValveBiped.Bip01_L_Hand"},
+            {"ValveBiped.Bip01_R_Foot"},
+            {"ValveBiped.Bip01_L_Foot"},
+        },
+    },
+    full_body = {
+        name = "Всё тело",
+        slots = {
+            {"ValveBiped.Bip01_Head1"},
+            {"ValveBiped.Bip01_Spine2", "ValveBiped.Bip01_Spine"},
+            {"ValveBiped.Bip01_Pelvis"},
             {"ValveBiped.Bip01_R_Hand", "ValveBiped.Anim_Attachment_RH"},
             {"ValveBiped.Bip01_L_Hand"},
             {"ValveBiped.Bip01_R_Foot"},
@@ -352,7 +498,7 @@ end
 local function SaveBodyFXConfig()
     local color = BodyFXConfig.color or Color(90, 180, 255)
     local payload = {
-        version = 1,
+        version = 2,
         enabled = BodyFXConfig.enabled == true,
         preset = BodyFXConfig.preset,
         style = BodyFXConfig.style,
@@ -366,6 +512,9 @@ local function SaveBodyFXConfig()
         length = BodyFXConfig.length,
         wiggle = BodyFXConfig.wiggle,
         speed = BodyFXConfig.speed,
+        intensity = BodyFXConfig.intensity,
+        particles = BodyFXConfig.particles == true,
+        sourceGlow = BodyFXConfig.sourceGlow == true,
         dynamicLight = BodyFXConfig.dynamicLight == true,
         throughWalls = BodyFXConfig.throughWalls == true,
     }
@@ -396,6 +545,9 @@ local function LoadBodyFXConfig()
     BodyFXConfig.length = math.Clamp(tonumber(data.length) or BodyFXConfig.length, 20, 260)
     BodyFXConfig.wiggle = math.Clamp(tonumber(data.wiggle) or BodyFXConfig.wiggle, 0, 30)
     BodyFXConfig.speed = math.Clamp(tonumber(data.speed) or BodyFXConfig.speed, 1, 20)
+    BodyFXConfig.intensity = math.Clamp(tonumber(data.intensity) or BodyFXConfig.intensity, 0.35, 2.25)
+    BodyFXConfig.particles = data.particles ~= false
+    BodyFXConfig.sourceGlow = data.sourceGlow ~= false
     BodyFXConfig.dynamicLight = data.dynamicLight ~= false
     BodyFXConfig.throughWalls = data.throughWalls == true
     BodyFXConfig.enabled = data.enabled == true
@@ -1763,21 +1915,31 @@ end
 local function GetBodyFXRenderPoints(state, now, style)
     local output = {}
     local lifetime = math.max(BodyFXConfig.lifetime, 0.01)
+    local maxProgress = math.Clamp(tonumber(style.maxProgress) or 1, 0.1, 1)
     for _, point in ipairs(state.points or {}) do
         local age = now - point.time
         if age <= lifetime then
             local progress = math.Clamp(age / lifetime, 0, 1)
-            local fade = 1 - progress
-            local waveSize = BodyFXConfig.wiggle * progress * (style.noise or 1)
-            local phase = now * BodyFXConfig.speed + point.phase
-            local wave = point.right * (math.sin(phase * 1.7) * waveSize)
-                + point.up * (math.cos(phase * 1.25) * waveSize * 0.7)
-            local drift = point.direction
-                * (BodyFXConfig.length * progress * (point.driftScale or 1))
-            table.insert(output, {
-                pos = point.pos + drift + wave,
-                fade = fade,
-            })
+            if progress <= maxProgress then
+                local renderProgress = math.Clamp(progress / maxProgress, 0, 1)
+                local fade = 1 - renderProgress
+                local waveSize = BodyFXConfig.wiggle * renderProgress * (style.noise or 1)
+                local phase = now * BodyFXConfig.speed + point.phase
+                local wave = point.right * (math.sin(phase * 1.7) * waveSize)
+                    + point.up * (math.cos(phase * 1.25) * waveSize * 0.7)
+                local drift = point.direction
+                    * (BodyFXConfig.length * renderProgress * (point.driftScale or 1))
+                local lift = point.up
+                    * (BodyFXConfig.length * renderProgress * (style.lift or 0))
+                table.insert(output, {
+                    pos = point.pos + drift + wave + lift,
+                    fade = fade,
+                    progress = renderProgress,
+                    phase = phase,
+                    right = point.right,
+                    up = point.up,
+                })
+            end
         end
     end
     return output
@@ -1787,40 +1949,50 @@ local function GetBodyFXColor(style, segmentIndex, now)
     if style.rainbow then
         return HSVToColor((now * 150 + segmentIndex * 16) % 360, 1, 1)
     end
+    if istable(style.palette) and #style.palette > 0 then
+        local offset = math.floor(now * (style.paletteSpeed or 4))
+        return style.palette[(segmentIndex + offset - 1) % #style.palette + 1]
+    end
     return BodyFXConfig.color or Color(90, 180, 255)
 end
 
-local function DrawBodyFXTrail(state, lightIndex, now, style)
+local function DrawBodyFXTrail(state, lightIndex, now, style, renderStep, allowLight)
     local points = GetBodyFXRenderPoints(state, now, style)
     if #points == 0 then return end
 
+    local intensity = math.Clamp(tonumber(BodyFXConfig.intensity) or 1, 0.35, 2.25)
+    local widthScale = math.sqrt(intensity)
+    local tailAlpha = math.Clamp(tonumber(style.tailAlpha) or 1, 0.1, 1)
+    local step = math.max(math.floor(tonumber(renderStep) or 1), 1)
     local pulse = 0.88 + math.sin(now * 9 + lightIndex) * 0.12
     if #points >= 2 then
         render.SetMaterial(style.material)
-        for i = 1, #points - 1 do
-            local fade = math.min(points[i].fade, points[i + 1].fade)
+        for i = 1, #points - step, step do
+            local nextIndex = math.min(i + step, #points)
+            local fade = math.min(points[i].fade, points[nextIndex].fade)
             local color = GetBodyFXColor(style, i, now)
-            local alpha = math.floor(220 * fade * fade)
-            local width = BodyFXConfig.width * (0.2 + fade * 0.8) * pulse
+            local alpha = math.Clamp(math.floor(220 * fade * fade * intensity * tailAlpha), 0, 255)
+            local width = BodyFXConfig.width * (0.2 + fade * 0.8) * pulse * widthScale
             render.DrawBeam(
                 points[i].pos,
-                points[i + 1].pos,
+                points[nextIndex].pos,
                 width * 1.8,
                 now * -2 + i * 0.08,
-                now * -2 + (i + 1) * 0.08,
+                now * -2 + nextIndex * 0.08,
                 Color(color.r, color.g, color.b, alpha)
             )
         end
 
         render.SetMaterial(BodyFXCoreMaterial)
-        for i = 1, #points - 1 do
-            local fade = math.min(points[i].fade, points[i + 1].fade)
+        for i = 1, #points - step, step do
+            local nextIndex = math.min(i + step, #points)
+            local fade = math.min(points[i].fade, points[nextIndex].fade)
             local color = GetBodyFXColor(style, i, now)
-            local alpha = math.floor(255 * fade * fade)
-            local width = BodyFXConfig.width * (0.12 + fade * 0.34) * pulse
+            local alpha = math.Clamp(math.floor(255 * fade * fade * intensity * tailAlpha), 0, 255)
+            local width = BodyFXConfig.width * (0.12 + fade * 0.34) * pulse * widthScale
             render.DrawBeam(
                 points[i].pos,
-                points[i + 1].pos,
+                points[nextIndex].pos,
                 width,
                 0,
                 1,
@@ -1832,37 +2004,210 @@ local function DrawBodyFXTrail(state, lightIndex, now, style)
                 )
             )
         end
+
+        if style.helix then
+            render.SetMaterial(style.material)
+            for strand = 0, 1 do
+                for i = 1, #points - step, step do
+                    local nextIndex = math.min(i + step, #points)
+                    local first = points[i]
+                    local second = points[nextIndex]
+                    local phaseA = now * BodyFXConfig.speed * 1.8 + i * 0.72 + strand * math.pi
+                    local phaseB = now * BodyFXConfig.speed * 1.8 + nextIndex * 0.72 + strand * math.pi
+                    local radiusA = BodyFXConfig.width * first.fade * 1.15 * widthScale
+                    local radiusB = BodyFXConfig.width * second.fade * 1.15 * widthScale
+                    local offsetA = first.right * (math.cos(phaseA) * radiusA)
+                        + first.up * (math.sin(phaseA) * radiusA)
+                    local offsetB = second.right * (math.cos(phaseB) * radiusB)
+                        + second.up * (math.sin(phaseB) * radiusB)
+                    local color = GetBodyFXColor(style, i + strand, now)
+                    render.DrawBeam(
+                        first.pos + offsetA,
+                        second.pos + offsetB,
+                        BodyFXConfig.width * 0.42 * widthScale,
+                        0,
+                        1,
+                        Color(color.r, color.g, color.b, math.floor(205 * first.fade))
+                    )
+                end
+            end
+        end
+
+        if BodyFXConfig.particles and (style.sparks or style.shards) then
+            render.SetMaterial(style.sparks and BodyFXCoreMaterial or style.material)
+            local specialStep = math.max(step * (style.shards and 4 or 3), 3)
+            for i = 2, math.min(#points, 28), specialStep do
+                local point = points[i]
+                local color = GetBodyFXColor(style, i + 1, now)
+                local phase = now * BodyFXConfig.speed * 2.5 + i * 1.73 + lightIndex
+                local side = point.right * math.sin(phase)
+                    + point.up * math.cos(phase * 0.83)
+                local branchSize = BodyFXConfig.width
+                    * (style.shards and 2.8 or 2.1)
+                    * point.fade
+                    * intensity
+                render.DrawBeam(
+                    point.pos,
+                    point.pos + side * branchSize,
+                    BodyFXConfig.width * (style.shards and 0.24 or 0.16) * widthScale,
+                    0,
+                    1,
+                    Color(color.r, color.g, color.b, math.floor(220 * point.fade))
+                )
+                if style.shards then
+                    render.DrawBeam(
+                        point.pos,
+                        point.pos - side * branchSize * 0.65,
+                        BodyFXConfig.width * 0.18 * widthScale,
+                        0,
+                        1,
+                        Color(235, 250, 255, math.floor(175 * point.fade))
+                    )
+                end
+            end
+        end
     end
 
     local sourceColor = GetBodyFXColor(style, 1, now)
-    render.SetMaterial(BodyFXGlowMaterial)
-    render.DrawSprite(
-        points[1].pos,
-        BodyFXConfig.width * 3.2,
-        BodyFXConfig.width * 3.2,
-        Color(sourceColor.r, sourceColor.g, sourceColor.b, 235)
-    )
-    for i = 5, #points, 6 do
-        local point = points[i]
-        local size = BodyFXConfig.width * point.fade * 1.1
-        render.DrawSprite(
-            point.pos,
-            size,
-            size,
-            Color(sourceColor.r, sourceColor.g, sourceColor.b, math.floor(150 * point.fade))
-        )
+    local sourcePoint = points[1]
+
+    if style.rings then
+        render.SetMaterial(style.material)
+        for ringIndex = 1, 2 do
+            local ringProgress = (now * BodyFXConfig.speed * 0.35 + ringIndex * 0.5) % 1
+            local ringRadius = BodyFXConfig.width
+                * (1.2 + ringProgress * 4.5)
+                * widthScale
+            local ringAlpha = math.floor(230 * (1 - ringProgress) * intensity)
+            for segment = 0, 15 do
+                local angleA = segment * math.pi * 2 / 16
+                local angleB = (segment + 1) * math.pi * 2 / 16
+                local ringA = sourcePoint.pos
+                    + sourcePoint.right * (math.cos(angleA) * ringRadius)
+                    + sourcePoint.up * (math.sin(angleA) * ringRadius)
+                local ringB = sourcePoint.pos
+                    + sourcePoint.right * (math.cos(angleB) * ringRadius)
+                    + sourcePoint.up * (math.sin(angleB) * ringRadius)
+                render.DrawBeam(
+                    ringA,
+                    ringB,
+                    math.max(1, BodyFXConfig.width * 0.2 * widthScale),
+                    0,
+                    1,
+                    Color(sourceColor.r, sourceColor.g, sourceColor.b, math.Clamp(ringAlpha, 0, 255))
+                )
+            end
+        end
     end
 
-    if BodyFXConfig.dynamicLight then
+    if style.orbit then
+        local orbitPoints = {}
+        local orbitRadius = BodyFXConfig.width * 3.1 * widthScale
+        for orbitIndex = 1, 3 do
+            local angle = now * BodyFXConfig.speed * 0.85
+                + orbitIndex * math.pi * 2 / 3
+            orbitPoints[orbitIndex] = sourcePoint.pos
+                + sourcePoint.right * (math.cos(angle) * orbitRadius)
+                + sourcePoint.up * (math.sin(angle) * orbitRadius)
+        end
+        render.SetMaterial(style.material)
+        for orbitIndex = 1, 3 do
+            local nextIndex = orbitIndex % 3 + 1
+            render.DrawBeam(
+                orbitPoints[orbitIndex],
+                orbitPoints[nextIndex],
+                math.max(1, BodyFXConfig.width * 0.16 * widthScale),
+                0,
+                1,
+                Color(sourceColor.r, sourceColor.g, sourceColor.b, 150)
+            )
+        end
+        render.SetMaterial(BodyFXGlowMaterial)
+        for orbitIndex = 1, 3 do
+            local orbitColor = GetBodyFXColor(style, orbitIndex + 1, now)
+            render.DrawSprite(
+                orbitPoints[orbitIndex],
+                BodyFXConfig.width * 1.15 * widthScale,
+                BodyFXConfig.width * 1.15 * widthScale,
+                Color(orbitColor.r, orbitColor.g, orbitColor.b, 220)
+            )
+        end
+    end
+
+    render.SetMaterial(BodyFXGlowMaterial)
+    if BodyFXConfig.sourceGlow then
+        render.DrawSprite(
+            sourcePoint.pos,
+            BodyFXConfig.width * 3.2 * widthScale,
+            BodyFXConfig.width * 3.2 * widthScale,
+            Color(
+                sourceColor.r,
+                sourceColor.g,
+                sourceColor.b,
+                math.Clamp(math.floor(235 * intensity), 0, 255)
+            )
+        )
+    end
+    if BodyFXConfig.particles then
+        for i = 5, #points, 6 * step do
+            local point = points[i]
+            local pointColor = GetBodyFXColor(style, i, now)
+            local size = BodyFXConfig.width * point.fade * 1.1 * widthScale
+            render.DrawSprite(
+                point.pos,
+                size,
+                size,
+                Color(pointColor.r, pointColor.g, pointColor.b, math.floor(150 * point.fade))
+            )
+        end
+    end
+    if BodyFXConfig.particles and style.embers then
+        for i = 2, math.min(#points, 26), math.max(3, step * 4) do
+            local point = points[i]
+            local emberColor = GetBodyFXColor(style, i + 2, now)
+            local emberPhase = now * BodyFXConfig.speed + i * 2.17
+            local emberPos = point.pos
+                + point.right * (math.sin(emberPhase) * BodyFXConfig.width * 1.6)
+                + point.up * (BodyFXConfig.width * (1.2 + point.progress * 4))
+            local emberSize = math.max(1.5, BodyFXConfig.width * 0.48 * point.fade * widthScale)
+            render.DrawSprite(
+                emberPos,
+                emberSize,
+                emberSize,
+                Color(emberColor.r, emberColor.g, emberColor.b, math.floor(210 * point.fade))
+            )
+        end
+    end
+
+    if BodyFXConfig.particles and style.rings then
+        local burstCount = 6
+        for burstIndex = 1, burstCount do
+            local burstAngle = now * BodyFXConfig.speed
+                + burstIndex * math.pi * 2 / burstCount
+            local burstRadius = BodyFXConfig.width * 2.2 * widthScale
+            local burstPos = sourcePoint.pos
+                + sourcePoint.right * (math.cos(burstAngle) * burstRadius)
+                + sourcePoint.up * (math.sin(burstAngle) * burstRadius)
+            local burstSize = math.max(1.5, BodyFXConfig.width * 0.42 * widthScale)
+            render.DrawSprite(
+                burstPos,
+                burstSize,
+                burstSize,
+                Color(sourceColor.r, sourceColor.g, sourceColor.b, 175)
+            )
+        end
+    end
+
+    if BodyFXConfig.dynamicLight and allowLight ~= false then
         local dlight = DynamicLight(lightIndex)
         if dlight then
-            dlight.pos = points[1].pos
+            dlight.pos = sourcePoint.pos
             dlight.r = sourceColor.r
             dlight.g = sourceColor.g
             dlight.b = sourceColor.b
-            dlight.brightness = 1.4
+            dlight.brightness = 1.4 * intensity
             dlight.decay = 700
-            dlight.size = 90 + BodyFXConfig.width * 5
+            dlight.size = (90 + BodyFXConfig.width * 5) * widthScale
             dlight.dietime = now + 0.08
         end
     end
@@ -1897,7 +2242,15 @@ hook.Add("PostDrawTranslucentRenderables", hook_BodyFX, function(_, drawingSkybo
                 BodyFXTrails[stateKey] = state
             end
             AddBodyFXSample(state, lp, pos, now)
-            DrawBodyFXTrail(state, lp:EntIndex() * 8 + slotIndex, now, style)
+            local renderStep = #preset.slots >= 6 and 2 or 1
+            DrawBodyFXTrail(
+                state,
+                lp:EntIndex() * 32 + slotIndex,
+                now,
+                style,
+                renderStep,
+                slotIndex <= 4
+            )
         end
     end
 
@@ -2341,13 +2694,108 @@ local function BuildBodyFXPanel()
         Notify("Шлейф очищен")
     end)
 
-    ULXLabel(scroll, 20, 92, "Часть тела:")
+    local quickPresets = {
+        lightning = {
+            name = "Грозовые кулаки",
+            preset = "both_hands", style = "electric", color = Color(80, 175, 255),
+            width = 8, lifetime = 0.65, length = 115, wiggle = 18, speed = 15,
+            intensity = 1.25, particles = true, sourceGlow = true, dynamicLight = true,
+        },
+        inferno = {
+            name = "Инферно",
+            preset = "all_extremities", style = "fire", color = Color(255, 120, 25),
+            width = 13, lifetime = 1.15, length = 105, wiggle = 15, speed = 12,
+            intensity = 1.55, particles = true, sourceGlow = true, dynamicLight = true,
+        },
+        frost_guard = {
+            name = "Ледяной страж",
+            preset = "arms", style = "frost", color = Color(110, 220, 255),
+            width = 10, lifetime = 1.4, length = 135, wiggle = 6, speed = 5,
+            intensity = 1.15, particles = true, sourceGlow = true, dynamicLight = true,
+        },
+        speedster = {
+            name = "Сверхскорость",
+            preset = "feet", style = "energy", color = Color(50, 210, 255),
+            width = 11, lifetime = 1.05, length = 250, wiggle = 4, speed = 17,
+            intensity = 1.35, particles = true, sourceGlow = true, dynamicLight = true,
+        },
+        cosmic = {
+            name = "Космическая аура",
+            preset = "full_body", style = "void", color = Color(165, 70, 255),
+            width = 11, lifetime = 1.35, length = 90, wiggle = 10, speed = 7,
+            intensity = 1.25, particles = true, sourceGlow = true, dynamicLight = false,
+        },
+        reactor = {
+            name = "Импульсный реактор",
+            preset = "head_chest", style = "pulse", color = Color(80, 255, 170),
+            width = 9, lifetime = 0.75, length = 45, wiggle = 1, speed = 8,
+            intensity = 1.45, particles = true, sourceGlow = true, dynamicLight = true,
+        },
+        plasma_core = {
+            name = "Плазменное ядро",
+            preset = "spine", style = "plasma", color = Color(255, 70, 220),
+            width = 10, lifetime = 1.1, length = 100, wiggle = 8, speed = 11,
+            intensity = 1.35, particles = true, sourceGlow = true, dynamicLight = true,
+        },
+        chaos = {
+            name = "Хаотичный разряд",
+            preset = "full_body", style = "sparks", color = Color(255, 70, 165),
+            width = 7, lifetime = 0.65, length = 85, wiggle = 24, speed = 18,
+            intensity = 1.25, particles = true, sourceGlow = true, dynamicLight = false,
+        },
+    }
+    local quickPresetOrder = {
+        "lightning", "inferno", "frost_guard", "speedster",
+        "cosmic", "reactor", "plasma_core", "chaos",
+    }
+
+    ULXLabel(scroll, 20, 92, "Готовый пресет:")
+    local quickCombo = vgui.Create("DComboBox", scroll)
+    quickCombo:SetPos(165, 88)
+    quickCombo:SetSize(307, 24)
+    quickCombo:SetValue("Выбери готовый эффект")
+    for _, key in ipairs(quickPresetOrder) do
+        quickCombo:AddChoice(quickPresets[key].name, key)
+    end
+    quickCombo.OnSelect = function(_, _, _, key)
+        local profile = quickPresets[key]
+        if not profile then return end
+        BodyFXConfig.enabled = true
+        BodyFXConfig.preset = profile.preset
+        BodyFXConfig.style = profile.style
+        BodyFXConfig.color = Color(profile.color.r, profile.color.g, profile.color.b)
+        BodyFXConfig.width = profile.width
+        BodyFXConfig.lifetime = profile.lifetime
+        BodyFXConfig.length = profile.length
+        BodyFXConfig.wiggle = profile.wiggle
+        BodyFXConfig.speed = profile.speed
+        BodyFXConfig.intensity = profile.intensity
+        BodyFXConfig.particles = profile.particles
+        BodyFXConfig.sourceGlow = profile.sourceGlow
+        BodyFXConfig.dynamicLight = profile.dynamicLight
+        ClearBodyFXTrails()
+        SaveBodyFXConfig()
+        LogFeatureUsage(
+            "bodyfx.preset",
+            profile.name
+                .. " • " .. BodyFXBonePresets[profile.preset].name
+                .. " • " .. BodyFXStyles[profile.style].name,
+            "success"
+        )
+        Notify("Пресет применён: " .. profile.name)
+        timer.Simple(0, function()
+            if IsValid(mainFrame) then BuildBodyFXPanel() end
+        end)
+    end
+
+    ULXLabel(scroll, 20, 126, "Часть тела:")
     local presetCombo = vgui.Create("DComboBox", scroll)
-    presetCombo:SetPos(165, 88)
+    presetCombo:SetPos(165, 122)
     presetCombo:SetSize(307, 24)
     local presetOrder = {
-        "right_hand", "left_hand", "both_hands", "forearms",
-        "head", "chest", "feet", "all_extremities",
+        "right_hand", "left_hand", "both_hands", "forearms", "shoulders",
+        "elbows", "head", "chest", "head_chest", "right_foot", "left_foot",
+        "feet", "knees", "arms", "legs", "spine", "all_extremities", "full_body",
     }
     for _, key in ipairs(presetOrder) do
         presetCombo:AddChoice(BodyFXBonePresets[key].name, key)
@@ -2361,11 +2809,14 @@ local function BuildBodyFXPanel()
         LogFeatureUsage("bodyfx.bone", BodyFXBonePresets[key].name, "success")
     end
 
-    ULXLabel(scroll, 20, 126, "Стиль:")
+    ULXLabel(scroll, 20, 160, "Стиль:")
     local styleCombo = vgui.Create("DComboBox", scroll)
-    styleCombo:SetPos(165, 122)
+    styleCombo:SetPos(165, 156)
     styleCombo:SetSize(307, 24)
-    for _, key in ipairs({"electric", "energy", "rainbow"}) do
+    for _, key in ipairs({
+        "electric", "energy", "rainbow", "plasma", "fire",
+        "frost", "void", "pulse", "sparks",
+    }) do
         styleCombo:AddChoice(BodyFXStyles[key].name, key)
     end
     styleCombo:SetValue(BodyFXStyles[BodyFXConfig.style].name)
@@ -2377,8 +2828,8 @@ local function BuildBodyFXPanel()
         LogFeatureUsage("bodyfx.style", BodyFXStyles[key].name, "success")
     end
 
-    ULXLabel(scroll, 20, 160, "Цвет:")
-    local colorButton = ULXButton(scroll, 165, 156, 307, 26, "", function()
+    ULXLabel(scroll, 20, 194, "Цвет основы:")
+    local colorButton = ULXButton(scroll, 165, 190, 307, 26, "", function()
         local dialog = vgui.Create("DFrame")
         dialog:SetSize(300, 265)
         dialog:Center()
@@ -2441,50 +2892,86 @@ local function BuildBodyFXPanel()
         return slider
     end
 
-    AddBodyFXSlider(198, "Толщина", "width", 2, 30, 1)
-    AddBodyFXSlider(236, "Время затухания", "lifetime", 0.2, 2.5, 2)
-    AddBodyFXSlider(274, "Длина шлейфа", "length", 20, 260, 0)
-    AddBodyFXSlider(312, "Изгиб / шум", "wiggle", 0, 30, 1)
-    AddBodyFXSlider(350, "Скорость анимации", "speed", 1, 20, 1)
+    AddBodyFXSlider(232, "Толщина", "width", 2, 30, 1)
+    AddBodyFXSlider(270, "Время затухания", "lifetime", 0.2, 2.5, 2)
+    AddBodyFXSlider(308, "Длина шлейфа", "length", 20, 260, 0)
+    AddBodyFXSlider(346, "Изгиб / шум", "wiggle", 0, 30, 1)
+    AddBodyFXSlider(384, "Скорость анимации", "speed", 1, 20, 1)
+    AddBodyFXSlider(422, "Интенсивность", "intensity", 0.35, 2.25, 2)
 
-    local lightCheck = vgui.Create("DCheckBoxLabel", scroll)
-    lightCheck:SetPos(20, 395)
-    lightCheck:SetText("Освещать пространство вокруг кости")
-    lightCheck:SetTextColor(ThemeCol("text"))
-    lightCheck:SetChecked(BodyFXConfig.dynamicLight)
-    lightCheck:SizeToContents()
-    lightCheck.OnChange = function(_, checked)
-        BodyFXConfig.dynamicLight = checked == true
-        SaveBodyFXConfig()
-        LogFeatureUsage("bodyfx.light", checked and "Включён" or "Выключен", "success")
+    local function AddBodyFXCheck(y, text, key, action, enabledText, disabledText)
+        local check = vgui.Create("DCheckBoxLabel", scroll)
+        check:SetPos(20, y)
+        check:SetText(text)
+        check:SetTextColor(ThemeCol("text"))
+        check:SetChecked(BodyFXConfig[key])
+        check:SizeToContents()
+        check.OnChange = function(_, checked)
+            BodyFXConfig[key] = checked == true
+            SaveBodyFXConfig()
+            LogFeatureUsage(
+                action,
+                checked and enabledText or disabledText,
+                "success"
+            )
+        end
     end
 
-    local wallsCheck = vgui.Create("DCheckBoxLabel", scroll)
-    wallsCheck:SetPos(20, 424)
-    wallsCheck:SetText("Показывать эффект сквозь стены")
-    wallsCheck:SetTextColor(ThemeCol("text"))
-    wallsCheck:SetChecked(BodyFXConfig.throughWalls)
-    wallsCheck:SizeToContents()
-    wallsCheck.OnChange = function(_, checked)
-        BodyFXConfig.throughWalls = checked == true
-        SaveBodyFXConfig()
-        LogFeatureUsage("bodyfx.visibility", checked and "Сквозь стены" or "Обычная глубина", "success")
-    end
+    AddBodyFXCheck(
+        467,
+        "Дополнительные частицы, искры и осколки",
+        "particles",
+        "bodyfx.option",
+        "Дополнительные частицы включены",
+        "Дополнительные частицы выключены"
+    )
+    AddBodyFXCheck(
+        496,
+        "Яркое свечение в точке крепления",
+        "sourceGlow",
+        "bodyfx.option",
+        "Свечение кости включено",
+        "Свечение кости выключено"
+    )
+    AddBodyFXCheck(
+        525,
+        "Освещать пространство вокруг кости",
+        "dynamicLight",
+        "bodyfx.light",
+        "Динамический свет включён",
+        "Динамический свет выключен"
+    )
+    AddBodyFXCheck(
+        554,
+        "Показывать эффект сквозь стены",
+        "throughWalls",
+        "bodyfx.visibility",
+        "Сквозь стены",
+        "Обычная глубина"
+    )
 
     ULXLabel(
         scroll,
         20,
-        457,
+        590,
         "Эффект клиентский: его видишь ты. Лучше всего смотрится от третьего лица.",
         Color(165, 180, 205)
     )
     ULXLabel(
         scroll,
         20,
-        480,
-        "Если у модели нет выбранной ValveBiped-кости, шлейф не рисуется.",
+        613,
+        "Огонь, лёд и пустота используют свои палитры; остальные — выбранный цвет.",
         Color(165, 180, 205)
     )
+    ULXLabel(
+        scroll,
+        20,
+        636,
+        "На больших пресетах детализация автоматически снижается для стабильного FPS.",
+        Color(165, 180, 205)
+    )
+    scroll:GetCanvas():SetTall(672)
 end
 
 -- 15.4 СКРИПТЫ
@@ -3329,6 +3816,9 @@ local function BuildOopsPanel()
         BodyFXConfig.length = 125
         BodyFXConfig.wiggle = 10
         BodyFXConfig.speed = 8
+        BodyFXConfig.intensity = 1
+        BodyFXConfig.particles = true
+        BodyFXConfig.sourceGlow = true
         BodyFXConfig.dynamicLight = true
         BodyFXConfig.throughWalls = false
         ClearBodyFXTrails()
@@ -3349,6 +3839,9 @@ local function BuildOopsPanel()
         BodyFXConfig.length = 125
         BodyFXConfig.wiggle = 10
         BodyFXConfig.speed = 8
+        BodyFXConfig.intensity = 1
+        BodyFXConfig.particles = true
+        BodyFXConfig.sourceGlow = true
         BodyFXConfig.dynamicLight = true
         BodyFXConfig.throughWalls = false
         ClearBodyFXTrails()
