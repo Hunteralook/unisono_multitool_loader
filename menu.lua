@@ -1,12 +1,12 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.3.2 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.4.0 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist и логи синхронизируются
 --  между клиентами без пользовательского серверного Lua.
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.3.2-http-loader"
+local SCRIPT_VERSION = "v1.4.0-function-logs"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -22,6 +22,7 @@ local WHITELIST_REFRESH_TIMER = "UnisonoMT_ClientWhitelistRefresh"
 local CLIENT_DATA_DIR = "unisono_multitool"
 local LOCAL_WHITELIST_PATH = CLIENT_DATA_DIR .. "/whitelist_cache.json"
 local LOCAL_USAGE_LOG_PATH = CLIENT_DATA_DIR .. "/usage_logs_local.txt"
+local PENDING_USAGE_LOG_PATH = CLIENT_DATA_DIR .. "/usage_logs_pending.json"
 local ADMIN_USAGE_LOG_PATH = CLIENT_DATA_DIR .. "/peer_usage_logs.json"
 local CLIENT_TOKEN_PATH = CLIENT_DATA_DIR .. "/github_auth.json"
 local LEGACY_CLIENT_TOKEN_PATH = CLIENT_DATA_DIR .. "/github_token.txt"
@@ -66,6 +67,7 @@ local PEER_SEND_TIMER = "UnisonoMT_ClientPeerSend"
 local PEER_CLEANUP_TIMER = "UnisonoMT_ClientPeerCleanup"
 local PEER_LOG_TIMER = "UnisonoMT_ClientPeerLogs"
 local ADMIN_LOG_SYNC_TIMER = "UnisonoMT_ClientLogSync"
+local PEER_LOG_QUEUE_MAX = 200
 
 local SessionStats = {
     sessionStart = CurTime(), kills = 0, deaths = 0,
@@ -250,17 +252,48 @@ local function IsValidSteamID(steamID)
     return isstring(steamID) and string.match(steamID, "^STEAM_%d:%d:%d+$") ~= nil
 end
 
-local function BuildUsageRow(action, detail, source)
+local function NormalizeUsageResult(result)
+    result = string.lower(tostring(result or "success"))
+    if result ~= "success" and result ~= "error" and result ~= "cancelled" and result ~= "info" then
+        return "info"
+    end
+    return result
+end
+
+local usage_event_counter = 0
+
+local function BuildUsageRow(action, detail, source, result)
     local lp = LocalPlayer()
+    usage_event_counter = usage_event_counter + 1
+    local unixTime = os.time()
+    local steamID64 = IsValid(lp) and lp:SteamID64() or "0"
+    local safeAction = string.sub(tostring(action or "unknown"), 1, 64)
+    local category = string.match(safeAction, "^([%w_%-]+)%.") or safeAction
+    local serverName = "unknown"
+    if isfunction(GetHostName) then
+        serverName = string.sub(tostring(GetHostName() or "unknown"), 1, 96)
+        if serverName == "" then serverName = "unknown" end
+    end
     return {
+        schema = 2,
+        id = table.concat({
+            steamID64,
+            tostring(unixTime),
+            tostring(math.floor(RealTime() * 1000)),
+            tostring(usage_event_counter),
+        }, "-"),
         timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-        unix = os.time(),
+        unix = unixTime,
         steamid = IsValid(lp) and lp:SteamID() or "UNKNOWN",
-        steamid64 = IsValid(lp) and lp:SteamID64() or "0",
+        steamid64 = steamID64,
         nick = IsValid(lp) and lp:Nick() or "UNKNOWN",
-        action = tostring(action or "unknown"),
-        detail = tostring(detail or ""),
+        action = safeAction,
+        category = string.sub(tostring(category or "unknown"), 1, 32),
+        detail = string.sub(tostring(detail or ""), 1, 256),
+        result = NormalizeUsageResult(result),
         map = game.GetMap() or "unknown",
+        server = serverName,
+        version = SCRIPT_VERSION,
         source = source or "game-client",
     }
 end
@@ -274,18 +307,24 @@ local QueuePeerLog = nil
 local AppendAdminUsageLog = nil
 local SyncAdminLogsToGist = nil
 
-local function LogFeatureUsage(action, detail)
+local function LogFeatureUsage(action, detail, result)
     action = string.sub(tostring(action or "unknown"), 1, 64)
     detail = string.sub(tostring(detail or ""), 1, 256)
-    local row = BuildUsageRow(action, detail, IsWhitelistAdmin() and "admin-client" or "game-client")
+    local row = BuildUsageRow(
+        action,
+        detail,
+        IsWhitelistAdmin() and "admin-client" or "game-client",
+        result
+    )
     AppendLocalUsageLog(row)
 
     if IsWhitelistAdmin() and AppendAdminUsageLog then
         AppendAdminUsageLog(row)
-        return
+        return row
     end
 
-    if QueuePeerLog then QueuePeerLog(action, detail) end
+    if QueuePeerLog then QueuePeerLog(row) end
+    return row
 end
 
 -- ==================== 6. ВАЙТЛИСТ ====================
@@ -692,6 +731,7 @@ local function QueueGistJob(job)
 end
 
 local function UsageLogIdentity(entry)
+    if isstring(entry.id) and entry.id ~= "" then return entry.id end
     return table.concat({
         tostring(entry.timestamp or ""),
         tostring(entry.steamid or ""),
@@ -797,6 +837,33 @@ local peer_request_rate = {}
 local peer_log_rate = {}
 local peer_message_counter = 0
 
+local function SavePeerLogQueue()
+    if IsWhitelistAdmin() then return end
+    file.CreateDir(CLIENT_DATA_DIR)
+    file.Write(PENDING_USAGE_LOG_PATH, util.TableToJSON(peer_log_queue, true) or "[]")
+end
+
+local function LoadPeerLogQueue()
+    if IsWhitelistAdmin() then return end
+    local loaded = util.JSONToTable(file.Read(PENDING_USAGE_LOG_PATH, "DATA") or "")
+    if not istable(loaded) then return end
+    for _, compact in ipairs(loaded) do
+        if istable(compact) and isstring(compact.a) and tonumber(compact.t) then
+            table.insert(peer_log_queue, {
+                id = string.sub(tostring(compact.id or ""), 1, 128),
+                a = string.sub(tostring(compact.a or "unknown"), 1, 64),
+                d = string.sub(tostring(compact.d or ""), 1, 256),
+                r = NormalizeUsageResult(compact.r),
+                t = tonumber(compact.t) or os.time(),
+                m = string.sub(tostring(compact.m or "unknown"), 1, 64),
+                s = string.sub(tostring(compact.s or "unknown"), 1, 96),
+                v = string.sub(tostring(compact.v or ""), 1, 64),
+            })
+        end
+    end
+    while #peer_log_queue > PEER_LOG_QUEUE_MAX do table.remove(peer_log_queue, 1) end
+end
+
 local function FindOnlineWhitelistAdmin()
     for _, ply in ipairs(player.GetAll()) do
         if IsValid(ply) and ply:SteamID() == ADMIN_STEAMID then return ply end
@@ -888,13 +955,20 @@ local function BroadcastWhitelistMutation(operation, steamID, permissions, persi
     })
 end
 
-QueuePeerLog = function(action, detail)
+QueuePeerLog = function(row)
+    if not istable(row) then return end
     table.insert(peer_log_queue, {
-        a = string.sub(tostring(action or "unknown"), 1, 64),
-        d = string.sub(tostring(detail or ""), 1, 256),
-        t = os.time(),
+        id = string.sub(tostring(row.id or ""), 1, 128),
+        a = string.sub(tostring(row.action or "unknown"), 1, 64),
+        d = string.sub(tostring(row.detail or ""), 1, 256),
+        r = NormalizeUsageResult(row.result),
+        t = tonumber(row.unix) or os.time(),
+        m = string.sub(tostring(row.map or "unknown"), 1, 64),
+        s = string.sub(tostring(row.server or "unknown"), 1, 96),
+        v = string.sub(tostring(row.version or SCRIPT_VERSION), 1, 64),
     })
-    while #peer_log_queue > 48 do table.remove(peer_log_queue, 1) end
+    while #peer_log_queue > PEER_LOG_QUEUE_MAX do table.remove(peer_log_queue, 1) end
+    SavePeerLogQueue()
 end
 
 local function ApplyPeerMutation(payload, keepPeerOverride)
@@ -972,14 +1046,20 @@ local function HandlePeerPayload(sender, kind, payload)
                 local detail = string.sub(tostring(compact.d or ""), 1, 256)
                 local timestamp = tonumber(compact.t) or os.time()
                 AppendAdminUsageLog({
+                    schema = 2,
+                    id = string.sub(tostring(compact.id or ""), 1, 128),
                     timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ", timestamp),
                     unix = timestamp,
                     steamid = sender:SteamID(),
                     steamid64 = sender:SteamID64(),
                     nick = sender:Nick(),
                     action = action,
+                    category = string.match(action, "^([%w_%-]+)%.") or action,
                     detail = detail,
-                    map = game.GetMap() or "unknown",
+                    result = NormalizeUsageResult(compact.r),
+                    map = string.sub(tostring(compact.m or game.GetMap() or "unknown"), 1, 64),
+                    server = string.sub(tostring(compact.s or "unknown"), 1, 96),
+                    version = string.sub(tostring(compact.v or ""), 1, 64),
                     source = "client-peer",
                 })
             end
@@ -1067,6 +1147,7 @@ timer.Create(PEER_LOG_TIMER, 5, 0, function()
     if not success then
         for index = #batch, 1, -1 do table.insert(peer_log_queue, 1, batch[index]) end
     end
+    SavePeerLogQueue()
 end)
 
 timer.Create(ADMIN_LOG_SYNC_TIMER, 30, 0, function()
@@ -1130,10 +1211,12 @@ end
 
 local function MutateClientWhitelist(operation, steamID, permissions, callback)
     if not IsWhitelistAdmin() then
+        LogFeatureUsage("whitelist." .. tostring(operation or "unknown"), "Нет доступа", "error")
         if callback then callback(false, "Нет доступа.") end
         return false
     end
     if (operation ~= "upsert" and operation ~= "remove") or not IsValidSteamID(steamID) then
+        LogFeatureUsage("whitelist." .. tostring(operation or "unknown"), "Некорректный SteamID", "error")
         if callback then callback(false, "Некорректная операция или SteamID.") end
         return false
     end
@@ -1143,18 +1226,24 @@ local function MutateClientWhitelist(operation, steamID, permissions, callback)
         permissions = permissions or {},
     }
     if not ApplyPeerMutation(payload, true) then
+        LogFeatureUsage("whitelist." .. operation, steamID .. " • локальная ошибка", "error")
         if callback then callback(false, "Не удалось применить изменение.") end
         return false
     end
     BroadcastWhitelistMutation(operation, steamID, permissions, false)
-    LogFeatureUsage("whitelist." .. operation, steamID)
 
     if not HasClientGitHubToken() then
+        LogFeatureUsage("whitelist." .. operation, steamID .. " • только клиенты", "success")
         if callback then callback(true, "Изменение отправлено клиентам; GitHub token не настроен.") end
         return true
     end
 
     PersistWhitelistMutationToGist(operation, steamID, permissions, function(success, message)
+        LogFeatureUsage(
+            "whitelist." .. operation,
+            steamID .. (success and " • GitHub + клиенты" or " • только клиенты"),
+            success and "success" or "error"
+        )
         if callback then callback(success, success and message or ("Между клиентами изменено, но GitHub не сохранён: " .. tostring(message))) end
     end)
     return true
@@ -1529,7 +1618,6 @@ local function ULXButton(parent, x, y, w, h, text, doclick)
         draw.SimpleText(text, "Unisono_ULXBtn", w2/2, h2/2, t.btnText, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
     btn.DoClick = function(...)
-        LogFeatureUsage("ui.button", text)
         if doclick then return doclick(...) end
     end
     return btn
@@ -1579,13 +1667,17 @@ local function BuildShadersPanel()
         end
     end
 
+    local suppressInitialSelectionLog = true
     list.OnRowSelected = function(lst, idx, pnl)
         ActivateShader(pnl.ShaderIndex)
         BuildShaderControls(pnl.ShaderIndex)
-        LogFeatureUsage("shader.select", ShadersConfig[pnl.ShaderIndex].name)
+        if not suppressInitialSelectionLog then
+            LogFeatureUsage("shader.select", ShadersConfig[pnl.ShaderIndex].name, "success")
+        end
     end
 
     list:SelectItem(rows[ActiveShaderIndex] or rows[1])
+    suppressInitialSelectionLog = false
 end
 
 -- 15.2 ШРИФТЫ
@@ -1596,13 +1688,25 @@ local function BuildFontPanel()
         local dlg = vgui.Create("DFrame") dlg:SetSize(300,130) dlg:Center() dlg:SetTitle("Шрифт ESP") dlg:MakePopup()
         local f = vgui.Create("DTextEntry", dlg) f:SetPos(10,30) f:SetSize(280,25) f:SetText(ESP_FontFamily)
         local s = vgui.Create("DNumSlider", dlg) s:SetPos(10,60) s:SetSize(280,30) s:SetText("Размер") s:SetMin(12) s:SetMax(60) s:SetDecimals(0) s:SetValue(ESP_FontSize)
-        ULXButton(dlg, 100, 95, 100, 25, "Применить", function() CreateESPFont(f:GetValue(), math.floor(s:GetValue())); dlg:Close() end)
+        ULXButton(dlg, 100, 95, 100, 25, "Применить", function()
+            local family = string.sub(string.Trim(f:GetValue()), 1, 64)
+            local size = math.floor(s:GetValue())
+            CreateESPFont(family, size)
+            LogFeatureUsage("font.esp.apply", family .. " • " .. tostring(size) .. " px", "success")
+            dlg:Close()
+        end)
     end)
     ULXButton(contentPanel, 20, 100, 200, 30, "Шрифт Меню", function()
         local dlg = vgui.Create("DFrame") dlg:SetSize(300,130) dlg:Center() dlg:SetTitle("Шрифт Меню") dlg:MakePopup()
         local f = vgui.Create("DTextEntry", dlg) f:SetPos(10,30) f:SetSize(280,25) f:SetText(Menu_FontFamily)
         local s = vgui.Create("DNumSlider", dlg) s:SetPos(10,60) s:SetSize(280,30) s:SetText("Размер") s:SetMin(12) s:SetMax(60) s:SetDecimals(0) s:SetValue(Menu_FontSize)
-        ULXButton(dlg, 100, 95, 100, 25, "Применить", function() CreateMenuFont(f:GetValue(), math.floor(s:GetValue())); dlg:Close() end)
+        ULXButton(dlg, 100, 95, 100, 25, "Применить", function()
+            local family = string.sub(string.Trim(f:GetValue()), 1, 64)
+            local size = math.floor(s:GetValue())
+            CreateMenuFont(family, size)
+            LogFeatureUsage("font.menu.apply", family .. " • " .. tostring(size) .. " px", "success")
+            dlg:Close()
+        end)
     end)
 end
 
@@ -1610,7 +1714,11 @@ end
 local function BuildPhysgunPanel()
     ClearContent()
     ULXLabel(contentPanel, 20, 20, "Физган")
-    ULXButton(contentPanel, 20, 60, 220, 30, "Выдать физган", function() RunConsoleCommand("gm_giveswep","weapon_physgun") Notify("Физган выдан") end)
+    ULXButton(contentPanel, 20, 60, 220, 30, "Выдать физган", function()
+        RunConsoleCommand("gm_giveswep", "weapon_physgun")
+        LogFeatureUsage("physgun.give", "weapon_physgun", "success")
+        Notify("Физган выдан")
+    end)
     local btnRainbow
     btnRainbow = ULXButton(contentPanel, 20, 100, 220, 30, "Радужный: ВЫКЛ", function()
         Physgun_RainbowEnabled = not Physgun_RainbowEnabled
@@ -1620,6 +1728,11 @@ local function BuildPhysgunPanel()
             surface.SetDrawColor(col) surface.DrawRect(0,0,w2,h2)
             draw.SimpleText("Радужный: "..(Physgun_RainbowEnabled and "ВКЛ" or "ВЫКЛ"), "Unisono_ULXBtn", w2/2, h2/2, th.btnText, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
         end
+        LogFeatureUsage(
+            "physgun.rainbow",
+            Physgun_RainbowEnabled and "Включён" or "Выключен",
+            "success"
+        )
         Notify(Physgun_RainbowEnabled and "Включён" or "Выключен")
     end)
 end
@@ -1648,10 +1761,20 @@ local function BuildScriptsPanel(parent)
         chk:SetPos(220, y+2)
         chk:SetChecked(cv and cv:GetBool() or false)
         chk.OnChange = function(self, val)
-            LogFeatureUsage("cvar.change", opt[2] .. "=" .. (val and "1" or "0"))
-            local ok, err = pcall(function() if cv then cv:SetBool(val) end end)
-            if not ok then Notify("Команда заблокирована сервером: "..opt[2], true)
-            else Notify(opt[1]..": "..(val and "ВКЛ" or "ВЫКЛ")) end
+            local ok, err = pcall(function()
+                if not cv then error("CVar не найден") end
+                cv:SetBool(val)
+            end)
+            LogFeatureUsage(
+                "cvar.change",
+                opt[2] .. "=" .. (val and "1" or "0"),
+                ok and "success" or "error"
+            )
+            if not ok then
+                Notify("Команда заблокирована сервером: "..opt[2], true)
+            else
+                Notify(opt[1]..": "..(val and "ВКЛ" or "ВЫКЛ"))
+            end
         end
         y = y + 35
     end
@@ -1717,10 +1840,10 @@ local function BuildConsolePanel()
         if cmd == "" then return end
         input:SetText("")
         local command = string.lower(cmd)
-        LogFeatureUsage("console.execute", string.StartWith(command, "!") and command or mode)
 
         if command == "!help" then
             PrintLocalConsoleHelp()
+            LogFeatureUsage("console.help", "Список встроенных команд", "success")
             return
         end
 
@@ -1731,10 +1854,13 @@ local function BuildConsolePanel()
                 if hasUpdate then
                     LogToConsole(Color(255,165,0), "Доступно обновление: " .. tostring(remoteVersion))
                     LogToConsole(Color(100,255,100), "Используйте !update для установки.")
+                    LogFeatureUsage("update.check", "Доступна " .. tostring(remoteVersion), "info")
                 elseif isLatest then
                     LogToConsole(Color(0,255,0), "Установлена последняя версия.")
+                    LogFeatureUsage("update.check", "Установлена последняя версия", "success")
                 else
                     LogToConsole(Color(255,100,100), "Не удалось проверить обновления.")
+                    LogFeatureUsage("update.check", "Проверка не удалась", "error")
                 end
             end)
             return
@@ -1743,9 +1869,11 @@ local function BuildConsolePanel()
         if command == "!whitelist" then
             if not IsWhitelistAdmin() then
                 LogToConsole(Color(255,0,0), "У вас нет доступа к этой команде.")
+                LogFeatureUsage("whitelist.open", "Нет доступа", "error")
                 return
             end
             LogToConsole(Color(0,255,0), "Открываю Admin → Whitelist.")
+            LogFeatureUsage("whitelist.open", "Открыта игровая панель", "success")
             if BuildAdminPanel then BuildAdminPanel("whitelist") end
             return
         end
@@ -1759,6 +1887,11 @@ local function BuildConsolePanel()
                     success and Color(0,255,0) or Color(255,165,0),
                     success and ("Whitelist загружен: " .. tostring(source) .. ".") or "Не удалось загрузить whitelist."
                 )
+                LogFeatureUsage(
+                    "whitelist.reload",
+                    success and tostring(source) or "GitHub недоступен",
+                    success and "success" or "error"
+                )
             end, true)
             RequestPeerWhitelist(function(success)
                 if success then LogToConsole(Color(0,255,0), "Получена клиентская синхронизация от админа.") end
@@ -1770,11 +1903,13 @@ local function BuildConsolePanel()
             LogToConsole(Color(255,255,0), "Обновление скрипта с GitHub...")
             PerformScriptUpdate(function(body)
                 LogToConsole(Color(0,255,0), "Скрипт скачан. Перезапуск...")
+                LogFeatureUsage("update.install", "Обновление скачано", "success")
                 MultiTool_UnloadSelf("Старая версия выгружена перед обновлением.")
                 if IsValid(mainFrame) then mainFrame:Close() end
                 RunString(body, "Multitool_Updater", false)
             end, function(err)
                 LogToConsole(Color(255,0,0), "Ошибка обновления: " .. tostring(err))
+                LogFeatureUsage("update.install", string.sub(tostring(err), 1, 160), "error")
             end)
             return
         end
@@ -1782,11 +1917,13 @@ local function BuildConsolePanel()
         if command == "!stopsound" then
             RunConsoleCommand("stopsound")
             LogToConsole(Color(0,255,0), "[OK] Выполнено: stopsound")
+            LogFeatureUsage("sound.stop", "stopsound", "success")
             return
         end
 
         if command == "!off" then
             LogToConsole(Color(255,140,0), "Скрипт будет выключен.")
+            LogFeatureUsage("script.disable", "Команда !off", "success")
             MultiTool_UnloadSelf("Скрипт успешно выгружен через !off.")
             if IsValid(mainFrame) then mainFrame:Close() end
             return
@@ -1819,8 +1956,14 @@ local function BuildConsolePanel()
                 else
                     LogToConsole(Color(255,50,50), "[ERROR] " .. tostring(ret))
                 end
+                LogFeatureUsage(
+                    "console.lua",
+                    "Локальная Lua-консоль; содержимое скрыто",
+                    ok and "success" or "error"
+                )
             else
                 LogToConsole(Color(255,50,50), "[SYNTAX ERROR] " .. tostring(func))
+                LogFeatureUsage("console.lua", "Ошибка синтаксиса; содержимое скрыто", "error")
             end
         else
             local ok, err = pcall(function() LocalPlayer():ConCommand(cmd) end)
@@ -1829,6 +1972,11 @@ local function BuildConsolePanel()
             else
                 LogToConsole(Color(255,50,50), "[BLOCKED] " .. tostring(err))
             end
+            LogFeatureUsage(
+                "console.command",
+                "Клиентская команда; содержимое скрыто",
+                ok and "success" or "error"
+            )
         end
     end
 
@@ -1973,6 +2121,11 @@ BuildWhitelistAdminPanel = function(parent)
             else
                 SetStatus("GitHub недоступен; ожидается peer-ответ.", true)
             end
+            LogFeatureUsage(
+                "whitelist.reload",
+                success and tostring(source) or "GitHub недоступен",
+                success and "success" or "error"
+            )
         end, true)
         RequestPeerWhitelist(function(success, data)
             if success then
@@ -2014,6 +2167,11 @@ BuildWhitelistAdminPanel = function(parent)
 
         ULXButton(dialog, 12, 94, 128, 26, "Сохранить", function()
             local success, message = SetClientGitHubToken(tokenEntry:GetValue())
+            LogFeatureUsage(
+                "github_token.save",
+                "Локальное хранилище GMod; значение скрыто",
+                success and "success" or "error"
+            )
             tokenStatus:SetText(message)
             tokenStatus:SetTextColor(success and Color(80,220,130) or Color(220,70,70))
             tokenStatus:SizeToContents()
@@ -2026,6 +2184,11 @@ BuildWhitelistAdminPanel = function(parent)
         end)
         ULXButton(dialog, 150, 94, 128, 26, "Удалить token", function()
             local success, message = SetClientGitHubToken("")
+            LogFeatureUsage(
+                "github_token.remove",
+                "Локальное хранилище GMod",
+                success and "success" or "error"
+            )
             tokenStatus:SetText(message)
             tokenStatus:SetTextColor(success and Color(80,220,130) or Color(220,70,70))
             tokenStatus:SizeToContents()
@@ -2036,6 +2199,11 @@ BuildWhitelistAdminPanel = function(parent)
 
     ULXButton(panel, actionX2, footerY, actionWidth, 24, "Синхр. всем клиентам", function()
         local success, message = BroadcastWhitelistSnapshot()
+        LogFeatureUsage(
+            "whitelist.broadcast",
+            success and "Снимок отправлен клиентам" or tostring(message),
+            success and "success" or "error"
+        )
         SetStatus(success and "Снимок whitelist отправляется клиентам." or tostring(message), not success)
     end)
 
@@ -2045,6 +2213,7 @@ BuildWhitelistAdminPanel = function(parent)
             return
         end
         SyncAdminLogsToGist()
+        LogFeatureUsage("logs.sync", "Поставлено в очередь GitHub", "info")
         SetStatus("Логи поставлены в очередь GitHub.")
     end)
 
@@ -2075,18 +2244,33 @@ local function BuildQMenuPanel()
     mixer:SetColor(QMenu_CustomColor or Color(100,150,200))
 
     ULXButton(contentPanel, 20, 240, 140, 26, "Применить цвет", function()
-        QMenu_CustomColor = mixer:GetColor(); QMenu_RainbowEnabled = false; ApplyQMenuColor(QMenu_CustomColor, false); Notify("Цвет применён") end)
+        QMenu_CustomColor = mixer:GetColor()
+        QMenu_RainbowEnabled = false
+        ApplyQMenuColor(QMenu_CustomColor, false)
+        LogFeatureUsage(
+            "qmenu.color",
+            string.format("RGB %d, %d, %d", QMenu_CustomColor.r, QMenu_CustomColor.g, QMenu_CustomColor.b),
+            "success"
+        )
+        Notify("Цвет применён")
+    end)
     ULXButton(contentPanel, 170, 240, 140, 26, "Радужный", function()
-        QMenu_RainbowEnabled = true; ApplyQMenuColor(nil, true); Notify("Радужный режим") end)
+        QMenu_RainbowEnabled = true
+        ApplyQMenuColor(nil, true)
+        LogFeatureUsage("qmenu.rainbow", "Включён", "success")
+        Notify("Радужный режим")
+    end)
     ULXButton(contentPanel, 20, 275, 290, 26, "Сброс", function()
         QMenu_RainbowEnabled = false; QMenu_CustomColor = nil
         if IsValid(g_SpawnMenu) and g_SpawnMenu.OriginalPaint then g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
-        Notify("Сброшено") end)
+        LogFeatureUsage("qmenu.reset", "Стандартное оформление", "success")
+        Notify("Сброшено")
+    end)
 end
 
 local function SendSafeChatCommand(cmd)
     local safeTimer = GenSafeHook()
-    LogFeatureUsage("chat.command", cmd)
+    LogFeatureUsage("chat.command", cmd, "success")
     timer.Create(safeTimer, 0.1, 1, function()
         RunConsoleCommand("say", cmd)
     end)
@@ -2214,48 +2398,87 @@ local function BuildNotesPanel()
 
             ULXButton(row, 350, 4, 50, 18, "Коп.", function()
                 SetClipboardText(string.format("%.0f %.0f %.0f", noteLocal.pos.x, noteLocal.pos.y, noteLocal.pos.z))
-                Notify("Координаты скопированы") end)
+                LogFeatureUsage("notes.copy_position", "Заметка #" .. tostring(noteLocal.id), "success")
+                Notify("Координаты скопированы")
+            end)
             ULXButton(row, 405, 4, 50, 18, "Удал.", function()
-                table.remove(MapNotes, iLocal) RefreshNotesList() Notify("Заметка удалена") end)
+                table.remove(MapNotes, iLocal)
+                LogFeatureUsage("notes.remove", "Заметка #" .. tostring(noteLocal.id), "success")
+                RefreshNotesList()
+                Notify("Заметка удалена")
+            end)
             ULXButton(row, 350, 24, 105, 18, "Переимен.", function()
                 local dlg = vgui.Create("DFrame") dlg:SetSize(300,90) dlg:Center() dlg:SetTitle("Редактировать") dlg:MakePopup()
                 local e = vgui.Create("DTextEntry", dlg) e:SetPos(10,30) e:SetSize(280,22) e:SetText(noteLocal.text)
                 ULXButton(dlg, 90, 60, 120, 22, "Сохранить", function()
                     local nt = string.Trim(e:GetValue())
-                    if nt ~= "" then noteLocal.text = nt; RefreshNotesList(); dlg:Close() end end)
+                    if nt ~= "" then
+                        noteLocal.text = nt
+                        LogFeatureUsage("notes.rename", "Заметка #" .. tostring(noteLocal.id), "success")
+                        RefreshNotesList()
+                        dlg:Close()
+                    else
+                        LogFeatureUsage("notes.rename", "Пустое имя", "error")
+                    end
+                end)
             end)
         end
     end
 
     ULXButton(addPanel, 8, 104, 240, 22, "Поставить здесь", function()
         local text = string.Trim(entryText:GetValue())
-        if text == "" then Notify("Введите текст!", true) return end
+        if text == "" then
+            LogFeatureUsage("notes.create_here", "Пустой текст", "error")
+            Notify("Введите текст!", true)
+            return
+        end
         local lp = LocalPlayer()
-        if not IsValid(lp) then return end
-        table.insert(MapNotes, { id=MapNotes_NextID, pos=lp:GetPos()+Vector(0,0,30), text=text,
+        if not IsValid(lp) then
+            LogFeatureUsage("notes.create_here", "Игрок недоступен", "error")
+            return
+        end
+        local noteID = MapNotes_NextID
+        table.insert(MapNotes, { id=noteID, pos=lp:GetPos()+Vector(0,0,30), text=text,
             color=Color(selectedColor.r,selectedColor.g,selectedColor.b), maxDist=math.floor(sliderDist:GetValue()) })
         MapNotes_NextID = MapNotes_NextID + 1
         entryText:SetText("") RefreshNotesList()
+        LogFeatureUsage("notes.create_here", "Заметка #" .. tostring(noteID), "success")
         Notify("Заметка добавлена")
     end)
     ULXButton(addPanel, 258, 104, 240, 22, "Поставить по прицелу", function()
         local text = string.Trim(entryText:GetValue())
-        if text == "" then Notify("Введите текст!", true) return end
+        if text == "" then
+            LogFeatureUsage("notes.create_aim", "Пустой текст", "error")
+            Notify("Введите текст!", true)
+            return
+        end
         local lp = LocalPlayer()
-        if not IsValid(lp) then return end
+        if not IsValid(lp) then
+            LogFeatureUsage("notes.create_aim", "Игрок недоступен", "error")
+            return
+        end
         local tr = util.TraceLine({ start=lp:EyePos(), endpos=lp:EyePos()+lp:GetAimVector()*5000, filter=lp, mask=MASK_SOLID_BRUSHONLY })
         local hitPos = tr.Hit and tr.HitPos or (lp:EyePos()+lp:GetAimVector()*500)
-        table.insert(MapNotes, { id=MapNotes_NextID, pos=hitPos+Vector(0,0,10), text=text,
+        local noteID = MapNotes_NextID
+        table.insert(MapNotes, { id=noteID, pos=hitPos+Vector(0,0,10), text=text,
             color=Color(selectedColor.r,selectedColor.g,selectedColor.b), maxDist=math.floor(sliderDist:GetValue()) })
         MapNotes_NextID = MapNotes_NextID + 1
         entryText:SetText("") RefreshNotesList()
+        LogFeatureUsage("notes.create_aim", "Заметка #" .. tostring(noteID), "success")
         Notify("Заметка по прицелу добавлена")
     end)
 
     local btnClearAll = ULXButton(contentPanel, 10, 500, 150, 24, "Удалить все", function()
         local dlg = vgui.Create("DFrame") dlg:SetSize(300,100) dlg:Center() dlg:SetTitle("Подтверждение") dlg:MakePopup()
         ULXLabel(dlg, 20, 30, "Удалить ВСЕ заметки?")
-        ULXButton(dlg, 40, 60, 100, 24, "Да", function() MapNotes = {} RefreshNotesList() dlg:Close() Notify("Все заметки удалены") end)
+        ULXButton(dlg, 40, 60, 100, 24, "Да", function()
+            local removedCount = #MapNotes
+            MapNotes = {}
+            LogFeatureUsage("notes.clear", "Удалено: " .. tostring(removedCount), "success")
+            RefreshNotesList()
+            dlg:Close()
+            Notify("Все заметки удалены")
+        end)
         ULXButton(dlg, 160, 60, 100, 24, "Отмена", function() dlg:Close() end)
     end)
 
@@ -2311,7 +2534,10 @@ local function BuildStatsPanel()
     bp:Dock(BOTTOM) bp:SetHeight(40) bp.Paint = function() end
     ULXButton(bp, 10, 5, 100, 28, "Сброс", function()
         SessionStats = { sessionStart=CurTime(), kills=0, deaths=0, damageTaken=0, damageDealt=0, distanceTraveled=0, jumps=0, lastPos=LocalPlayer():GetPos(), onGround=true }
-        UpdateStats() Notify("Статистика сброшена") end)
+        LogFeatureUsage("stats.reset", "Статистика текущей сессии", "success")
+        UpdateStats()
+        Notify("Статистика сброшена")
+    end)
     ULXButton(bp, 120, 5, 100, 28, "Обновить", UpdateStats)
 
     timer.Create("StatsUpdate_ULX", 1, 0, function()
@@ -2324,17 +2550,22 @@ local function BuildOopsPanel()
     ClearContent()
     ULXLabel(contentPanel, 20, 20, "Сброс настроек")
     local y = 60
-    local function AddReset(text, fn)
+    local function AddReset(text, action, fn)
         ULXButton(contentPanel, 20, y, 300, 28, text, function()
             local dlg = vgui.Create("DFrame") dlg:SetSize(320,100) dlg:Center()
             dlg:SetTitle("Подтверждение") dlg:MakePopup()
             ULXLabel(dlg, 20, 30, "Сбросить "..text.."?")
-            ULXButton(dlg, 40, 60, 100, 24, "Да", function() fn() dlg:Close() Notify(text.." сброшены") end)
+            ULXButton(dlg, 40, 60, 100, 24, "Да", function()
+                fn()
+                LogFeatureUsage(action, text, "success")
+                dlg:Close()
+                Notify(text.." сброшены")
+            end)
             ULXButton(dlg, 180, 60, 100, 24, "Отмена", function() dlg:Close() end)
         end)
         y = y + 38
     end
-    AddReset("Все настройки", function()
+    AddReset("Все настройки", "settings.reset_all", function()
         ESP_Enabled = false; ESP_MaxDistance = 1100
         ShaderStates = {}; ActiveShaderIndex = 1; ActivateShader(1)
         Physgun_RainbowEnabled = false; QMenu_RainbowEnabled = false; QMenu_CustomColor = nil
@@ -2342,9 +2573,9 @@ local function BuildOopsPanel()
         SessionStats = { sessionStart=CurTime(), kills=0, deaths=0, damageTaken=0, damageDealt=0, distanceTraveled=0, jumps=0, lastPos=Vector(0,0,0), onGround=true }
         if IsValid(g_SpawnMenu) and g_SpawnMenu.OriginalPaint then g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
     end)
-    AddReset("Только ESP", function() ESP_Enabled = false; ESP_MaxDistance = 1100 end)
-    AddReset("Только шейдеры", function() ShaderStates = {}; ActiveShaderIndex = 1; ActivateShader(1) end)
-    AddReset("Только заметки", function() MapNotes = {}; MapNotes_NextID = 1 end)
+    AddReset("Только ESP", "esp.reset", function() ESP_Enabled = false; ESP_MaxDistance = 1100 end)
+    AddReset("Только шейдеры", "shader.reset", function() ShaderStates = {}; ActiveShaderIndex = 1; ActivateShader(1) end)
+    AddReset("Только заметки", "notes.clear", function() MapNotes = {}; MapNotes_NextID = 1 end)
 end
 
 -- 15.11 ТЕМЫ
@@ -2364,6 +2595,7 @@ local function BuildThemesPanel()
         ULXButton(contentPanel, 20, y, 300, 28, theme.name, function()
             CurrentULXTheme = theme.key
             if IsValid(mainFrame) then mainFrame:InvalidateLayout(true) end
+            LogFeatureUsage("theme.apply", theme.name, "success")
             Notify("Тема '"..theme.name.."' применена к меню")
         end)
         y = y + 34
@@ -2380,6 +2612,7 @@ local function BuildESPPanel()
     ULXLabel(contentPanel, 20, 20, "ESP / Wallhack")
     local btnToggle = ULXButton(contentPanel, 20, 60, 200, 28, "Вкл / Выкл ESP", function()
         ESP_Enabled = not ESP_Enabled
+        LogFeatureUsage("esp.toggle", ESP_Enabled and "Включён" or "Выключен", "success")
         Notify(ESP_Enabled and "ESP Включён" or "ESP Выключен")
     end)
     ULXButton(contentPanel, 20, 100, 200, 28, "Дальность: "..ESP_MaxDistance, function()
@@ -2387,7 +2620,15 @@ local function BuildESPPanel()
         local e = vgui.Create("DTextEntry", dlg) e:SetPos(10,35) e:SetSize(150,22) e:SetText(tostring(ESP_MaxDistance)) e:SetNumeric(true)
         ULXButton(dlg, 170, 35, 60, 22, "OK", function()
             local v = tonumber(e:GetValue())
-            if v and v >= 200 then ESP_MaxDistance = v dlg:Close() Notify("Дальность: "..v) end end)
+            if v and v >= 200 then
+                ESP_MaxDistance = v
+                LogFeatureUsage("esp.distance", tostring(v), "success")
+                dlg:Close()
+                Notify("Дальность: "..v)
+            else
+                LogFeatureUsage("esp.distance", "Некорректное значение", "error")
+            end
+        end)
     end)
     ULXButton(contentPanel, 20, 140, 200, 28, "Настройка цветов", function()
         local dlg = vgui.Create("DFrame") dlg:SetSize(280,400) dlg:Center() dlg:SetTitle("Цвета рангов") dlg:MakePopup()
@@ -2405,7 +2646,11 @@ local function BuildESPPanel()
             row.DoClick = function()
                 local p = vgui.Create("DFrame") p:SetSize(260,220) p:Center() p:SetTitle("Цвет: "..role) p:MakePopup()
                 local m = vgui.Create("DColorMixer", p) m:SetPos(10,30) m:SetSize(240,140) m:SetColor(ESP_RoleColors[role])
-                ULXButton(p, 80, 180, 100, 24, "OK", function() ESP_RoleColors[role] = m:GetColor() p:Close() end)
+                ULXButton(p, 80, 180, 100, 24, "OK", function()
+                    ESP_RoleColors[role] = m:GetColor()
+                    LogFeatureUsage("esp.role_color", tostring(role), "success")
+                    p:Close()
+                end)
             end
         end
     end)
@@ -2423,6 +2668,7 @@ local function BuildESPPanel()
             combo.OnSelect = function(p,idx,val,data)
                 ESP_Layout[elem].side = data
                 ESP_Layout[elem].enabled = (data ~= "none")
+                LogFeatureUsage("esp.layout", elem .. "=" .. tostring(data), "success")
             end
             yOff = yOff + 40
         end
@@ -2477,7 +2723,7 @@ local function BuildServerExplorerPanel(parent)
 
     local function ScanAndPrint(keyword)
         keyword = string.lower(keyword or "")
-        if keyword == "" then return "Введите ключевое слово!\n" end
+        if keyword == "" then return "Введите ключевое слово!\n", 0 end
         local results = {}
         local function add(cat, name, info)
             table.insert(results, string.format("[%s] %s | %s", cat, name, info or ""))
@@ -2540,13 +2786,15 @@ local function BuildServerExplorerPanel(parent)
             end
         end
 
-        if #results == 0 then return "Ничего не найдено по запросу '"..keyword.."'\n" end
+        if #results == 0 then return "Ничего не найдено по запросу '"..keyword.."'\n", 0 end
         table.sort(results)
-        return "=== Найдено "..#results.." результатов ===\n"..table.concat(results, "\n").."\n"
+        return "=== Найдено "..#results.." результатов ===\n"..table.concat(results, "\n").."\n", #results
     end
 
     local function RunExplorerSearch()
-        AppendExplorer(ScanAndPrint(input:GetValue()), Color(210, 230, 255))
+        local text, count = ScanAndPrint(input:GetValue())
+        AppendExplorer(text, Color(210, 230, 255))
+        LogFeatureUsage("explorer.search", "Результатов: " .. tostring(count or 0), "success")
     end
 
     input.OnEnter = RunExplorerSearch
@@ -2590,6 +2838,7 @@ local function BuildServerExplorerPanel(parent)
             end
         end
         AppendExplorer(txt, Color(255, 220, 120))
+        LogFeatureUsage("explorer.physgun_scan", pg and "Физган найден" or "Физган не найден", pg and "success" or "error")
     end)
 
     ULXButton(panel, 20, footerY, 120, 22, "Очистить", function() output:SetText("") end)
@@ -2609,6 +2858,7 @@ local function BuildServerExplorerPanel(parent)
             end
         end
         AppendExplorer(txt, Color(180, 255, 180))
+        LogFeatureUsage("explorer.hooks", "Событий: " .. tostring(#events), "success")
     end)
 end
 
@@ -2670,7 +2920,7 @@ BuildAdminPanel = function(initialSection)
                 Notify("Нет доступа к !whitelist.", true)
                 return
             end
-            LogFeatureUsage("admin.command", "!whitelist")
+            LogFeatureUsage("admin.command", "!whitelist", "success")
             ShowSection("whitelist")
         end)
     end
@@ -2738,7 +2988,13 @@ end
 -- ==================== 16. ГЛАВНОЕ МЕНЮ ====================
 function ToggleMenu()
     if IsValid(mainFrame) then
-        if mainFrame:IsVisible() then mainFrame:Close() else mainFrame:SetVisible(true) mainFrame:MakePopup() end
+        if mainFrame:IsVisible() then
+            mainFrame:Close()
+        else
+            mainFrame:SetVisible(true)
+            mainFrame:MakePopup()
+            LogFeatureUsage("menu.open", SCRIPT_VERSION, "success")
+        end
         return
     end
 
@@ -2788,11 +3044,15 @@ function ToggleMenu()
         {"Обновить скрипт!", function()
             Notify("Скачивание обновления...")
             PerformScriptUpdate(function(body)
+                LogFeatureUsage("update.install", "Обновление скачано", "success")
                 Notify("Успешно! Перезагрузка...")
                 MultiTool_UnloadSelf("Старая версия выгружена перед обновлением.")
                 if IsValid(mainFrame) then mainFrame:Close() end
                 RunString(body, "Multitool_Updater", false)
-            end, function(err) Notify("Ошибка: "..tostring(err), true) end)
+            end, function(err)
+                LogFeatureUsage("update.install", string.sub(tostring(err), 1, 160), "error")
+                Notify("Ошибка: "..tostring(err), true)
+            end)
         end},
     }
 
@@ -2813,7 +3073,6 @@ function ToggleMenu()
         end
         btn.DoClick = function()
             surface.PlaySound("buttons/button9.wav")
-            LogFeatureUsage("menu.category", name)
             builder()
         end
         y = y + 32
@@ -2829,7 +3088,7 @@ function ToggleMenu()
     end
 
     BuildShadersPanel()
-    LogFeatureUsage("menu.open", SCRIPT_VERSION)
+    LogFeatureUsage("menu.open", SCRIPT_VERSION, "success")
 end
 
 -- ==================== 17. БИНД И ЗАГРУЗКА ====================
@@ -2872,6 +3131,7 @@ local function InitializeClientIdentityStorage()
             SyncAdminLogsToGist()
         end
     else
+        LoadPeerLogQueue()
         RequestPeerWhitelist()
     end
     return true
