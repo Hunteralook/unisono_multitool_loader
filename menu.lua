@@ -1,12 +1,12 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.6.0 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.6.1 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist и логи синхронизируются
 --  между клиентами без пользовательского серверного Lua.
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.6.0-client-control"
+local SCRIPT_VERSION = "v1.6.1-client-control"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -2136,6 +2136,11 @@ local function PollClientUpdateCommands()
 end
 
 -- ==================== 15. UI BUILDERS ====================
+-- Keep the entire menu UI in its own Lua function scope. Garry's Mod uses
+-- LuaJIT/Lua 5.1, where one function may have at most 200 active locals.
+-- Without this boundary, adding the client-version controls pushed the remote
+-- chunk over that limit before ULXButton could be compiled.
+local function InstallMenuUI()
 local mainFrame = nil
 local contentPanel = nil
 local BuildWhitelistAdminPanel = nil
@@ -3886,6 +3891,9 @@ hook.Add("OnPauseMenuShow", MENU_ESCAPE_HOOK, function()
         return false
     end
 end)
+
+end
+InstallMenuUI()
 
 local function MultiTool_StartWhitelistAutoload()
     local function TryLoadWhitelist()
