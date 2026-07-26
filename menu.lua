@@ -1,14 +1,14 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.3.0 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.3.2 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist и логи синхронизируются
 --  между клиентами без пользовательского серверного Lua.
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.3.0-http-loader"
+local SCRIPT_VERSION = "v1.3.2-http-loader"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
-local REMOTE_SCRIPT_URL = "https://hunteralook.github.io/multitool_bleb/gmod/cl_unisono_multitool.lua"
+local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
 -- ==================== 1. КОНФИГ ====================
 local WhitelistData = {}
@@ -2003,7 +2003,9 @@ BuildWhitelistAdminPanel = function(parent)
         local tokenEntry = vgui.Create("DTextEntry", dialog)
         tokenEntry:SetPos(12, 58)
         tokenEntry:SetSize(416, 24)
-        tokenEntry:SetPasswordInput(true)
+        if isfunction(tokenEntry.SetTextHidden) then
+            tokenEntry:SetTextHidden(true)
+        end
         tokenEntry:SetPlaceholderText(
             HasClientGitHubToken()
                 and ("Сохранён " .. MaskGitHubToken(github_token) .. "; новый ввод заменит его")
