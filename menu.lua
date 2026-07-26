@@ -1,12 +1,12 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.7.0 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.7.1 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist и логи синхронизируются
 --  между клиентами без пользовательского серверного Lua.
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.7.0-body-fx-pack"
+local SCRIPT_VERSION = "v1.7.1"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -1772,9 +1772,10 @@ hook.Add("PostDrawTranslucentRenderables", hook_Notes3D, function(_, drawingSkyb
         local maxD = note.maxDist or 2000
         if dist <= maxD then
             local markerPos, labelPos = GetNoteDrawPositions(note)
-            local ang = (lp:EyePos() - labelPos):Angle()
-            ang:RotateAroundAxis(ang:Right(), 90)
+            local ang = (labelPos - lp:EyePos()):GetNormalized():Angle()
+            ang = Angle(0, ang.y, 0)
             ang:RotateAroundAxis(ang:Up(), -90)
+            ang:RotateAroundAxis(ang:Forward(), 90)
             local pulse = 0.88 + math.sin(CurTime() * 2.4 + (note.id or 0)) * 0.12
             local a = math.Clamp(255 * (1 - (dist/maxD)*0.6) * pulse, 70, 255)
             local col = Color(note.color.r, note.color.g, note.color.b, a)
