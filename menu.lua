@@ -1,12 +1,12 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.4.0 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.5.0 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist и логи синхронизируются
 --  между клиентами без пользовательского серверного Lua.
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.4.0-function-logs"
+local SCRIPT_VERSION = "v1.5.0-body-effects"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -26,7 +26,9 @@ local PENDING_USAGE_LOG_PATH = CLIENT_DATA_DIR .. "/usage_logs_pending.json"
 local ADMIN_USAGE_LOG_PATH = CLIENT_DATA_DIR .. "/peer_usage_logs.json"
 local CLIENT_TOKEN_PATH = CLIENT_DATA_DIR .. "/github_auth.json"
 local LEGACY_CLIENT_TOKEN_PATH = CLIENT_DATA_DIR .. "/github_token.txt"
+local BODY_FX_CONFIG_PATH = CLIENT_DATA_DIR .. "/body_fx.json"
 local ADMIN_INIT_TIMER = "UnisonoMT_ClientIdentityInit"
+local BODY_FX_SAVE_TIMER = "UnisonoMT_BodyFXSave"
 
 local safePrefixes = {"UpdateUI_", "RenderMatrix_", "CalcViewOffset_", "ProcessNet_"}
 local function GenSafeHook() return safePrefixes[math.random(1, #safePrefixes)] .. tostring(math.random(10000, 99999)) end
@@ -39,6 +41,7 @@ local hook_RGB       = GenSafeHook()
 local hook_Stats     = GenSafeHook()
 local hook_Notes3D   = GenSafeHook()
 local hook_Notes3D_HUD = GenSafeHook()
+local hook_BodyFX    = GenSafeHook()
 
 local ESP_Enabled = false
 local ESP_MaxDistance = 1100
@@ -56,6 +59,99 @@ local ActiveShader = nil
 local ActiveParams = {}
 local ActiveShaderIndex = 1
 local ShaderStates = {}
+
+local BodyFXConfig = {
+    enabled = false,
+    preset = "right_hand",
+    style = "electric",
+    color = Color(90, 180, 255),
+    width = 10,
+    lifetime = 0.9,
+    length = 125,
+    wiggle = 10,
+    speed = 8,
+    dynamicLight = true,
+    throughWalls = false,
+}
+local BodyFXTrails = {}
+local BODY_FX_SAMPLE_INTERVAL = 1 / 40
+local BODY_FX_MAX_POINTS = 64
+local BodyFXGlowMaterial = Material("sprites/light_glow02_add")
+local BodyFXCoreMaterial = Material("sprites/physbeam")
+local BodyFXStyles = {
+    electric = {
+        name = "Электричество",
+        material = Material("trails/electric"),
+        noise = 1.0,
+    },
+    energy = {
+        name = "Энергетическая лента",
+        material = Material("trails/laser"),
+        noise = 0.45,
+    },
+    rainbow = {
+        name = "Радужная лента",
+        material = Material("trails/laser"),
+        noise = 0.65,
+        rainbow = true,
+    },
+}
+local BodyFXBonePresets = {
+    right_hand = {
+        name = "Правая кисть",
+        slots = {
+            {"ValveBiped.Bip01_R_Hand", "ValveBiped.Anim_Attachment_RH"},
+        },
+    },
+    left_hand = {
+        name = "Левая кисть",
+        slots = {
+            {"ValveBiped.Bip01_L_Hand"},
+        },
+    },
+    both_hands = {
+        name = "Обе кисти",
+        slots = {
+            {"ValveBiped.Bip01_R_Hand", "ValveBiped.Anim_Attachment_RH"},
+            {"ValveBiped.Bip01_L_Hand"},
+        },
+    },
+    forearms = {
+        name = "Оба предплечья",
+        slots = {
+            {"ValveBiped.Bip01_R_Forearm", "ValveBiped.Bip01_R_Elbow"},
+            {"ValveBiped.Bip01_L_Forearm", "ValveBiped.Bip01_L_Elbow"},
+        },
+    },
+    head = {
+        name = "Голова",
+        slots = {
+            {"ValveBiped.Bip01_Head1"},
+        },
+    },
+    chest = {
+        name = "Грудь",
+        slots = {
+            {"ValveBiped.Bip01_Spine2", "ValveBiped.Bip01_Spine"},
+        },
+    },
+    feet = {
+        name = "Обе стопы",
+        slots = {
+            {"ValveBiped.Bip01_R_Foot"},
+            {"ValveBiped.Bip01_L_Foot"},
+        },
+    },
+    all_extremities = {
+        name = "Кисти и стопы",
+        slots = {
+            {"ValveBiped.Bip01_R_Hand", "ValveBiped.Anim_Attachment_RH"},
+            {"ValveBiped.Bip01_L_Hand"},
+            {"ValveBiped.Bip01_R_Foot"},
+            {"ValveBiped.Bip01_L_Foot"},
+        },
+    },
+}
 
 local PEER_PROTOCOL_PREFIX = "__UMT_P2P_V1__"
 local PEER_CHUNK_SIZE = 72
@@ -242,6 +338,65 @@ local function FormatTime(sec)
     local s = math.floor(sec%60)
     return string.format("%02d:%02d:%02d", h, m, s)
 end
+
+local function ClearBodyFXTrails()
+    BodyFXTrails = {}
+end
+
+local function SaveBodyFXConfig()
+    local color = BodyFXConfig.color or Color(90, 180, 255)
+    local payload = {
+        version = 1,
+        enabled = BodyFXConfig.enabled == true,
+        preset = BodyFXConfig.preset,
+        style = BodyFXConfig.style,
+        color = {
+            r = math.Clamp(math.floor(tonumber(color.r) or 90), 0, 255),
+            g = math.Clamp(math.floor(tonumber(color.g) or 180), 0, 255),
+            b = math.Clamp(math.floor(tonumber(color.b) or 255), 0, 255),
+        },
+        width = BodyFXConfig.width,
+        lifetime = BodyFXConfig.lifetime,
+        length = BodyFXConfig.length,
+        wiggle = BodyFXConfig.wiggle,
+        speed = BodyFXConfig.speed,
+        dynamicLight = BodyFXConfig.dynamicLight == true,
+        throughWalls = BodyFXConfig.throughWalls == true,
+    }
+    file.CreateDir(CLIENT_DATA_DIR)
+    file.Write(BODY_FX_CONFIG_PATH, util.TableToJSON(payload, true) or "{}")
+end
+
+local function QueueBodyFXConfigSave()
+    timer.Create(BODY_FX_SAVE_TIMER, 0.25, 1, SaveBodyFXConfig)
+end
+
+local function LoadBodyFXConfig()
+    local raw = file.Read(BODY_FX_CONFIG_PATH, "DATA")
+    local data = raw and util.JSONToTable(raw) or nil
+    if not istable(data) then return false end
+
+    if BodyFXBonePresets[data.preset] then BodyFXConfig.preset = data.preset end
+    if BodyFXStyles[data.style] then BodyFXConfig.style = data.style end
+    if istable(data.color) then
+        BodyFXConfig.color = Color(
+            math.Clamp(math.floor(tonumber(data.color.r) or 90), 0, 255),
+            math.Clamp(math.floor(tonumber(data.color.g) or 180), 0, 255),
+            math.Clamp(math.floor(tonumber(data.color.b) or 255), 0, 255)
+        )
+    end
+    BodyFXConfig.width = math.Clamp(tonumber(data.width) or BodyFXConfig.width, 2, 30)
+    BodyFXConfig.lifetime = math.Clamp(tonumber(data.lifetime) or BodyFXConfig.lifetime, 0.2, 2.5)
+    BodyFXConfig.length = math.Clamp(tonumber(data.length) or BodyFXConfig.length, 20, 260)
+    BodyFXConfig.wiggle = math.Clamp(tonumber(data.wiggle) or BodyFXConfig.wiggle, 0, 30)
+    BodyFXConfig.speed = math.Clamp(tonumber(data.speed) or BodyFXConfig.speed, 1, 20)
+    BodyFXConfig.dynamicLight = data.dynamicLight ~= false
+    BodyFXConfig.throughWalls = data.throughWalls == true
+    BodyFXConfig.enabled = data.enabled == true
+    return true
+end
+
+LoadBodyFXConfig()
 
 local function IsWhitelistAdmin()
     local lp = LocalPlayer()
@@ -1262,6 +1417,7 @@ function MultiTool_UnloadSelf(reason)
     SafeRemoveHook("DrawTranslucent", hook_Notes3D)
     SafeRemoveHook("PostDrawTranslucentRenderables", hook_Notes3D)
     SafeRemoveHook("HUDPaint", hook_Notes3D_HUD)
+    SafeRemoveHook("PostDrawTranslucentRenderables", hook_BodyFX)
     SafeRemoveHook("OnScreenSizeChanged", "Unisono_StarFieldResize")
     SafeRemoveHook("PlayerBindPress", "Unisono_MenuBind")
     SafeRemoveHook("OnPlayerChat", PEER_CHAT_HOOK)
@@ -1275,10 +1431,13 @@ function MultiTool_UnloadSelf(reason)
         PEER_CLEANUP_TIMER,
         PEER_LOG_TIMER,
         ADMIN_LOG_SYNC_TIMER,
+        BODY_FX_SAVE_TIMER,
     }) do
         if timer.Exists(timerName) then timer.Remove(timerName) end
     end
     SaveWhitelistCache()
+    SaveBodyFXConfig()
+    ClearBodyFXTrails()
     if IsWhitelistAdmin() then SaveAdminUsageLogs() end
     if IsValid(g_SpawnMenu) and g_SpawnMenu.OriginalPaint then g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
     if _G.UnisonoMultiToolUnload == MultiTool_UnloadSelf then
@@ -1530,6 +1689,202 @@ hook.Add("HUDPaint", hook_Notes3D_HUD, function()
     end
 end)
 
+-- ==================== 12.5 ЭФФЕКТЫ НА ЧАСТЯХ ТЕЛА ====================
+local function ResolveBodyFXBone(ply, candidates)
+    for _, boneName in ipairs(candidates or {}) do
+        local boneIndex = ply:LookupBone(boneName)
+        if boneIndex then
+            local pos = nil
+            local matrix = ply:GetBoneMatrix(boneIndex)
+            if matrix then pos = matrix:GetTranslation() end
+            if not isvector(pos) then pos = ply:GetBonePosition(boneIndex) end
+            if isvector(pos) then return pos, boneName end
+        end
+    end
+    return nil, nil
+end
+
+local function AddBodyFXSample(state, ply, pos, now)
+    if state.lastFrame == FrameNumber() then return end
+    state.lastFrame = FrameNumber()
+    if state.lastSample and now - state.lastSample < BODY_FX_SAMPLE_INTERVAL then return end
+
+    if state.points[1] and state.points[1].pos:DistToSqr(pos) > 62500 then
+        state.points = {}
+    end
+
+    state.sampleCounter = (state.sampleCounter or 0) + 1
+    local velocity = ply:GetVelocity()
+    local moveSpeed = velocity:Length()
+    local driftDirection = moveSpeed > 40
+        and velocity:GetNormalized() * -1
+        or ply:GetForward() * -1
+    local driftScale = moveSpeed > 40 and 0.28 or 1
+
+    table.insert(state.points, 1, {
+        pos = Vector(pos.x, pos.y, pos.z),
+        time = now,
+        direction = driftDirection,
+        right = ply:GetRight(),
+        up = Vector(0, 0, 1),
+        driftScale = driftScale,
+        phase = state.sampleCounter * 0.82,
+    })
+    state.lastSample = now
+
+    while #state.points > BODY_FX_MAX_POINTS do
+        table.remove(state.points)
+    end
+    while state.points[#state.points]
+        and now - state.points[#state.points].time > BodyFXConfig.lifetime do
+        table.remove(state.points)
+    end
+end
+
+local function GetBodyFXRenderPoints(state, now, style)
+    local output = {}
+    local lifetime = math.max(BodyFXConfig.lifetime, 0.01)
+    for _, point in ipairs(state.points or {}) do
+        local age = now - point.time
+        if age <= lifetime then
+            local progress = math.Clamp(age / lifetime, 0, 1)
+            local fade = 1 - progress
+            local waveSize = BodyFXConfig.wiggle * progress * (style.noise or 1)
+            local phase = now * BodyFXConfig.speed + point.phase
+            local wave = point.right * (math.sin(phase * 1.7) * waveSize)
+                + point.up * (math.cos(phase * 1.25) * waveSize * 0.7)
+            local drift = point.direction
+                * (BodyFXConfig.length * progress * (point.driftScale or 1))
+            table.insert(output, {
+                pos = point.pos + drift + wave,
+                fade = fade,
+            })
+        end
+    end
+    return output
+end
+
+local function GetBodyFXColor(style, segmentIndex, now)
+    if style.rainbow then
+        return HSVToColor((now * 150 + segmentIndex * 16) % 360, 1, 1)
+    end
+    return BodyFXConfig.color or Color(90, 180, 255)
+end
+
+local function DrawBodyFXTrail(state, lightIndex, now, style)
+    local points = GetBodyFXRenderPoints(state, now, style)
+    if #points == 0 then return end
+
+    local pulse = 0.88 + math.sin(now * 9 + lightIndex) * 0.12
+    if #points >= 2 then
+        render.SetMaterial(style.material)
+        for i = 1, #points - 1 do
+            local fade = math.min(points[i].fade, points[i + 1].fade)
+            local color = GetBodyFXColor(style, i, now)
+            local alpha = math.floor(220 * fade * fade)
+            local width = BodyFXConfig.width * (0.2 + fade * 0.8) * pulse
+            render.DrawBeam(
+                points[i].pos,
+                points[i + 1].pos,
+                width * 1.8,
+                now * -2 + i * 0.08,
+                now * -2 + (i + 1) * 0.08,
+                Color(color.r, color.g, color.b, alpha)
+            )
+        end
+
+        render.SetMaterial(BodyFXCoreMaterial)
+        for i = 1, #points - 1 do
+            local fade = math.min(points[i].fade, points[i + 1].fade)
+            local color = GetBodyFXColor(style, i, now)
+            local alpha = math.floor(255 * fade * fade)
+            local width = BodyFXConfig.width * (0.12 + fade * 0.34) * pulse
+            render.DrawBeam(
+                points[i].pos,
+                points[i + 1].pos,
+                width,
+                0,
+                1,
+                Color(
+                    math.floor((color.r + 255) * 0.5),
+                    math.floor((color.g + 255) * 0.5),
+                    math.floor((color.b + 255) * 0.5),
+                    alpha
+                )
+            )
+        end
+    end
+
+    local sourceColor = GetBodyFXColor(style, 1, now)
+    render.SetMaterial(BodyFXGlowMaterial)
+    render.DrawSprite(
+        points[1].pos,
+        BodyFXConfig.width * 3.2,
+        BodyFXConfig.width * 3.2,
+        Color(sourceColor.r, sourceColor.g, sourceColor.b, 235)
+    )
+    for i = 5, #points, 6 do
+        local point = points[i]
+        local size = BodyFXConfig.width * point.fade * 1.1
+        render.DrawSprite(
+            point.pos,
+            size,
+            size,
+            Color(sourceColor.r, sourceColor.g, sourceColor.b, math.floor(150 * point.fade))
+        )
+    end
+
+    if BodyFXConfig.dynamicLight then
+        local dlight = DynamicLight(lightIndex)
+        if dlight then
+            dlight.pos = points[1].pos
+            dlight.r = sourceColor.r
+            dlight.g = sourceColor.g
+            dlight.b = sourceColor.b
+            dlight.brightness = 1.4
+            dlight.decay = 700
+            dlight.size = 90 + BodyFXConfig.width * 5
+            dlight.dietime = now + 0.08
+        end
+    end
+end
+
+hook.Add("PostDrawTranslucentRenderables", hook_BodyFX, function(_, drawingSkybox)
+    if drawingSkybox then return end
+    local lp = LocalPlayer()
+    if not IsValid(lp)
+        or not lp:Alive()
+        or not BodyFXConfig.enabled
+        or not HasAccess(lp:SteamID(), "BODY_FX") then
+        if next(BodyFXTrails) ~= nil then ClearBodyFXTrails() end
+        return
+    end
+
+    local preset = BodyFXBonePresets[BodyFXConfig.preset]
+    local style = BodyFXStyles[BodyFXConfig.style]
+    if not preset or not style then return end
+
+    lp:SetupBones()
+    local now = CurTime()
+    if BodyFXConfig.throughWalls then cam.IgnoreZ(true) end
+
+    for slotIndex, candidates in ipairs(preset.slots) do
+        local pos, boneName = ResolveBodyFXBone(lp, candidates)
+        if pos then
+            local stateKey = tostring(BodyFXConfig.preset) .. ":" .. tostring(slotIndex)
+            local state = BodyFXTrails[stateKey]
+            if not state then
+                state = {points = {}, boneName = boneName}
+                BodyFXTrails[stateKey] = state
+            end
+            AddBodyFXSample(state, lp, pos, now)
+            DrawBodyFXTrail(state, lp:EntIndex() * 8 + slotIndex, now, style)
+        end
+    end
+
+    if BodyFXConfig.throughWalls then cam.IgnoreZ(false) end
+end)
+
 -- ==================== 13. QMenu / ФИЗГАН ====================
 function ApplyQMenuColor(color, isRainbow)
     if IsValid(g_SpawnMenu) then
@@ -1735,6 +2090,204 @@ local function BuildPhysgunPanel()
         )
         Notify(Physgun_RainbowEnabled and "Включён" or "Выключен")
     end)
+end
+
+-- 15.3.1 ЭФФЕКТЫ ТЕЛА
+local function BuildBodyFXPanel()
+    ClearContent()
+    local lp = LocalPlayer()
+    if not IsValid(lp) or not HasAccess(lp:SteamID(), "BODY_FX") then
+        ULXLabel(contentPanel, 20, 20, "Нет доступа к эффектам тела.", Color(220,70,70))
+        return
+    end
+
+    local scroll = vgui.Create("DScrollPanel", contentPanel)
+    scroll:Dock(FILL)
+    ULXLabel(scroll, 20, 16, "Энергетический шлейф на костях персонажа")
+
+    local toggleButton
+    toggleButton = ULXButton(scroll, 20, 46, 220, 30, "", function()
+        BodyFXConfig.enabled = not BodyFXConfig.enabled
+        ClearBodyFXTrails()
+        SaveBodyFXConfig()
+        local preset = BodyFXBonePresets[BodyFXConfig.preset]
+        local style = BodyFXStyles[BodyFXConfig.style]
+        LogFeatureUsage(
+            "bodyfx.toggle",
+            (BodyFXConfig.enabled and "Включён" or "Выключен")
+                .. " • " .. tostring(preset and preset.name or BodyFXConfig.preset)
+                .. " • " .. tostring(style and style.name or BodyFXConfig.style),
+            "success"
+        )
+        Notify(BodyFXConfig.enabled and "Эффект тела включён" or "Эффект тела выключен")
+    end)
+    toggleButton.Paint = function(self, w, h)
+        local t = GetTheme()
+        local col = self:IsHovered() and t.btnHover or t.btn
+        if BodyFXConfig.enabled then col = t.status end
+        surface.SetDrawColor(col)
+        surface.DrawRect(0, 0, w, h)
+        draw.SimpleText(
+            "Эффект: " .. (BodyFXConfig.enabled and "ВКЛ" or "ВЫКЛ"),
+            "Unisono_ULXBtn",
+            w / 2,
+            h / 2,
+            t.btnText,
+            TEXT_ALIGN_CENTER,
+            TEXT_ALIGN_CENTER
+        )
+    end
+
+    ULXButton(scroll, 252, 46, 220, 30, "Очистить шлейф", function()
+        ClearBodyFXTrails()
+        LogFeatureUsage("bodyfx.clear", "История шлейфа очищена", "success")
+        Notify("Шлейф очищен")
+    end)
+
+    ULXLabel(scroll, 20, 92, "Часть тела:")
+    local presetCombo = vgui.Create("DComboBox", scroll)
+    presetCombo:SetPos(165, 88)
+    presetCombo:SetSize(307, 24)
+    local presetOrder = {
+        "right_hand", "left_hand", "both_hands", "forearms",
+        "head", "chest", "feet", "all_extremities",
+    }
+    for _, key in ipairs(presetOrder) do
+        presetCombo:AddChoice(BodyFXBonePresets[key].name, key)
+    end
+    presetCombo:SetValue(BodyFXBonePresets[BodyFXConfig.preset].name)
+    presetCombo.OnSelect = function(_, _, _, key)
+        if not BodyFXBonePresets[key] then return end
+        BodyFXConfig.preset = key
+        ClearBodyFXTrails()
+        SaveBodyFXConfig()
+        LogFeatureUsage("bodyfx.bone", BodyFXBonePresets[key].name, "success")
+    end
+
+    ULXLabel(scroll, 20, 126, "Стиль:")
+    local styleCombo = vgui.Create("DComboBox", scroll)
+    styleCombo:SetPos(165, 122)
+    styleCombo:SetSize(307, 24)
+    for _, key in ipairs({"electric", "energy", "rainbow"}) do
+        styleCombo:AddChoice(BodyFXStyles[key].name, key)
+    end
+    styleCombo:SetValue(BodyFXStyles[BodyFXConfig.style].name)
+    styleCombo.OnSelect = function(_, _, _, key)
+        if not BodyFXStyles[key] then return end
+        BodyFXConfig.style = key
+        ClearBodyFXTrails()
+        SaveBodyFXConfig()
+        LogFeatureUsage("bodyfx.style", BodyFXStyles[key].name, "success")
+    end
+
+    ULXLabel(scroll, 20, 160, "Цвет:")
+    local colorButton = ULXButton(scroll, 165, 156, 307, 26, "", function()
+        local dialog = vgui.Create("DFrame")
+        dialog:SetSize(300, 265)
+        dialog:Center()
+        dialog:SetTitle("Цвет эффекта")
+        dialog:MakePopup()
+
+        local mixer = vgui.Create("DColorMixer", dialog)
+        mixer:SetPos(10, 32)
+        mixer:SetSize(280, 185)
+        mixer:SetPalette(true)
+        mixer:SetAlphaBar(false)
+        mixer:SetWangs(true)
+        mixer:SetColor(BodyFXConfig.color)
+
+        ULXButton(dialog, 100, 228, 100, 26, "Применить", function()
+            local selected = mixer:GetColor()
+            BodyFXConfig.color = Color(selected.r, selected.g, selected.b)
+            SaveBodyFXConfig()
+            LogFeatureUsage(
+                "bodyfx.color",
+                string.format("RGB %d, %d, %d", selected.r, selected.g, selected.b),
+                "success"
+            )
+            dialog:Close()
+        end)
+    end)
+    colorButton.Paint = function(self, w, h)
+        local t = GetTheme()
+        local c = BodyFXConfig.color
+        surface.SetDrawColor(self:IsHovered() and t.btnHover or t.btn)
+        surface.DrawRect(0, 0, w, h)
+        surface.SetDrawColor(c.r, c.g, c.b, 255)
+        surface.DrawRect(6, 5, 34, h - 10)
+        draw.SimpleText(
+            string.format("RGB %d, %d, %d", c.r, c.g, c.b),
+            "Unisono_ULXBtn",
+            48,
+            h / 2,
+            t.btnText,
+            TEXT_ALIGN_LEFT,
+            TEXT_ALIGN_CENTER
+        )
+    end
+
+    local function AddBodyFXSlider(y, title, key, minValue, maxValue, decimals)
+        local slider = vgui.Create("DNumSlider", scroll)
+        slider:SetPos(14, y)
+        slider:SetSize(500, 34)
+        slider:SetText(title)
+        slider:SetMin(minValue)
+        slider:SetMax(maxValue)
+        slider:SetDecimals(decimals)
+        slider:SetValue(BodyFXConfig[key])
+        slider.Label:SetTextColor(ThemeCol("text"))
+        slider.OnValueChanged = function(_, value)
+            if decimals == 0 then value = math.Round(value) end
+            BodyFXConfig[key] = math.Clamp(value, minValue, maxValue)
+            QueueBodyFXConfigSave()
+        end
+        return slider
+    end
+
+    AddBodyFXSlider(198, "Толщина", "width", 2, 30, 1)
+    AddBodyFXSlider(236, "Время затухания", "lifetime", 0.2, 2.5, 2)
+    AddBodyFXSlider(274, "Длина шлейфа", "length", 20, 260, 0)
+    AddBodyFXSlider(312, "Изгиб / шум", "wiggle", 0, 30, 1)
+    AddBodyFXSlider(350, "Скорость анимации", "speed", 1, 20, 1)
+
+    local lightCheck = vgui.Create("DCheckBoxLabel", scroll)
+    lightCheck:SetPos(20, 395)
+    lightCheck:SetText("Освещать пространство вокруг кости")
+    lightCheck:SetTextColor(ThemeCol("text"))
+    lightCheck:SetChecked(BodyFXConfig.dynamicLight)
+    lightCheck:SizeToContents()
+    lightCheck.OnChange = function(_, checked)
+        BodyFXConfig.dynamicLight = checked == true
+        SaveBodyFXConfig()
+        LogFeatureUsage("bodyfx.light", checked and "Включён" or "Выключен", "success")
+    end
+
+    local wallsCheck = vgui.Create("DCheckBoxLabel", scroll)
+    wallsCheck:SetPos(20, 424)
+    wallsCheck:SetText("Показывать эффект сквозь стены")
+    wallsCheck:SetTextColor(ThemeCol("text"))
+    wallsCheck:SetChecked(BodyFXConfig.throughWalls)
+    wallsCheck:SizeToContents()
+    wallsCheck.OnChange = function(_, checked)
+        BodyFXConfig.throughWalls = checked == true
+        SaveBodyFXConfig()
+        LogFeatureUsage("bodyfx.visibility", checked and "Сквозь стены" or "Обычная глубина", "success")
+    end
+
+    ULXLabel(
+        scroll,
+        20,
+        457,
+        "Эффект клиентский: его видишь ты. Лучше всего смотрится от третьего лица.",
+        Color(165, 180, 205)
+    )
+    ULXLabel(
+        scroll,
+        20,
+        480,
+        "Если у модели нет выбранной ValveBiped-кости, шлейф не рисуется.",
+        Color(165, 180, 205)
+    )
 end
 
 -- 15.4 СКРИПТЫ
@@ -2022,11 +2575,12 @@ BuildWhitelistAdminPanel = function(parent)
     steamEntry:SetPos(10, entryY) steamEntry:SetSize(math.min(270, innerWidth), 24)
     steamEntry:SetPlaceholderText("STEAM_0:0:123456789")
 
-    local permissionOrder = {"ESP", "NOTES", "STATS", "NOT_WORKING"}
+    local permissionOrder = {"ESP", "NOTES", "STATS", "BODY_FX", "NOT_WORKING"}
     local permissionLabels = {
         ESP = "ESP",
         NOTES = "3D Заметки",
         STATS = "Статистика",
+        BODY_FX = "Эффекты тела",
         NOT_WORKING = "!Не работает!",
     }
     local permissionBoxes = {}
@@ -2569,12 +3123,40 @@ local function BuildOopsPanel()
         ESP_Enabled = false; ESP_MaxDistance = 1100
         ShaderStates = {}; ActiveShaderIndex = 1; ActivateShader(1)
         Physgun_RainbowEnabled = false; QMenu_RainbowEnabled = false; QMenu_CustomColor = nil
+        BodyFXConfig.enabled = false
+        BodyFXConfig.preset = "right_hand"
+        BodyFXConfig.style = "electric"
+        BodyFXConfig.color = Color(90, 180, 255)
+        BodyFXConfig.width = 10
+        BodyFXConfig.lifetime = 0.9
+        BodyFXConfig.length = 125
+        BodyFXConfig.wiggle = 10
+        BodyFXConfig.speed = 8
+        BodyFXConfig.dynamicLight = true
+        BodyFXConfig.throughWalls = false
+        ClearBodyFXTrails()
+        SaveBodyFXConfig()
         MapNotes = {}; MapNotes_NextID = 1
         SessionStats = { sessionStart=CurTime(), kills=0, deaths=0, damageTaken=0, damageDealt=0, distanceTraveled=0, jumps=0, lastPos=Vector(0,0,0), onGround=true }
         if IsValid(g_SpawnMenu) and g_SpawnMenu.OriginalPaint then g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
     end)
     AddReset("Только ESP", "esp.reset", function() ESP_Enabled = false; ESP_MaxDistance = 1100 end)
     AddReset("Только шейдеры", "shader.reset", function() ShaderStates = {}; ActiveShaderIndex = 1; ActivateShader(1) end)
+    AddReset("Только эффекты тела", "bodyfx.reset", function()
+        BodyFXConfig.enabled = false
+        BodyFXConfig.preset = "right_hand"
+        BodyFXConfig.style = "electric"
+        BodyFXConfig.color = Color(90, 180, 255)
+        BodyFXConfig.width = 10
+        BodyFXConfig.lifetime = 0.9
+        BodyFXConfig.length = 125
+        BodyFXConfig.wiggle = 10
+        BodyFXConfig.speed = 8
+        BodyFXConfig.dynamicLight = true
+        BodyFXConfig.throughWalls = false
+        ClearBodyFXTrails()
+        SaveBodyFXConfig()
+    end)
     AddReset("Только заметки", "notes.clear", function() MapNotes = {}; MapNotes_NextID = 1 end)
 end
 
@@ -3034,6 +3616,7 @@ function ToggleMenu()
         {"Шейдеры",        BuildShadersPanel},
         {"Настройки шрифта", BuildFontPanel},
         {"Физган",         BuildPhysgunPanel},
+        {"Эффекты тела",   BuildBodyFXPanel},
         {"Локальная консоль", BuildConsolePanel},
         {"Q Меню (Цвет)",  BuildQMenuPanel},
         {"Чат",            BuildChatPanel},
