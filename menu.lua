@@ -1,12 +1,12 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.5.0 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.3.3 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist и логи синхронизируются
 --  между клиентами без пользовательского серверного Lua.
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.5.0-body-effects"
+local SCRIPT_VERSION = "v1.3.3-http-loader"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -22,13 +22,10 @@ local WHITELIST_REFRESH_TIMER = "UnisonoMT_ClientWhitelistRefresh"
 local CLIENT_DATA_DIR = "unisono_multitool"
 local LOCAL_WHITELIST_PATH = CLIENT_DATA_DIR .. "/whitelist_cache.json"
 local LOCAL_USAGE_LOG_PATH = CLIENT_DATA_DIR .. "/usage_logs_local.txt"
-local PENDING_USAGE_LOG_PATH = CLIENT_DATA_DIR .. "/usage_logs_pending.json"
 local ADMIN_USAGE_LOG_PATH = CLIENT_DATA_DIR .. "/peer_usage_logs.json"
 local CLIENT_TOKEN_PATH = CLIENT_DATA_DIR .. "/github_auth.json"
 local LEGACY_CLIENT_TOKEN_PATH = CLIENT_DATA_DIR .. "/github_token.txt"
-local BODY_FX_CONFIG_PATH = CLIENT_DATA_DIR .. "/body_fx.json"
 local ADMIN_INIT_TIMER = "UnisonoMT_ClientIdentityInit"
-local BODY_FX_SAVE_TIMER = "UnisonoMT_BodyFXSave"
 
 local safePrefixes = {"UpdateUI_", "RenderMatrix_", "CalcViewOffset_", "ProcessNet_"}
 local function GenSafeHook() return safePrefixes[math.random(1, #safePrefixes)] .. tostring(math.random(10000, 99999)) end
@@ -41,7 +38,6 @@ local hook_RGB       = GenSafeHook()
 local hook_Stats     = GenSafeHook()
 local hook_Notes3D   = GenSafeHook()
 local hook_Notes3D_HUD = GenSafeHook()
-local hook_BodyFX    = GenSafeHook()
 
 local ESP_Enabled = false
 local ESP_MaxDistance = 1100
@@ -60,99 +56,6 @@ local ActiveParams = {}
 local ActiveShaderIndex = 1
 local ShaderStates = {}
 
-local BodyFXConfig = {
-    enabled = false,
-    preset = "right_hand",
-    style = "electric",
-    color = Color(90, 180, 255),
-    width = 10,
-    lifetime = 0.9,
-    length = 125,
-    wiggle = 10,
-    speed = 8,
-    dynamicLight = true,
-    throughWalls = false,
-}
-local BodyFXTrails = {}
-local BODY_FX_SAMPLE_INTERVAL = 1 / 40
-local BODY_FX_MAX_POINTS = 64
-local BodyFXGlowMaterial = Material("sprites/light_glow02_add")
-local BodyFXCoreMaterial = Material("sprites/physbeam")
-local BodyFXStyles = {
-    electric = {
-        name = "Электричество",
-        material = Material("trails/electric"),
-        noise = 1.0,
-    },
-    energy = {
-        name = "Энергетическая лента",
-        material = Material("trails/laser"),
-        noise = 0.45,
-    },
-    rainbow = {
-        name = "Радужная лента",
-        material = Material("trails/laser"),
-        noise = 0.65,
-        rainbow = true,
-    },
-}
-local BodyFXBonePresets = {
-    right_hand = {
-        name = "Правая кисть",
-        slots = {
-            {"ValveBiped.Bip01_R_Hand", "ValveBiped.Anim_Attachment_RH"},
-        },
-    },
-    left_hand = {
-        name = "Левая кисть",
-        slots = {
-            {"ValveBiped.Bip01_L_Hand"},
-        },
-    },
-    both_hands = {
-        name = "Обе кисти",
-        slots = {
-            {"ValveBiped.Bip01_R_Hand", "ValveBiped.Anim_Attachment_RH"},
-            {"ValveBiped.Bip01_L_Hand"},
-        },
-    },
-    forearms = {
-        name = "Оба предплечья",
-        slots = {
-            {"ValveBiped.Bip01_R_Forearm", "ValveBiped.Bip01_R_Elbow"},
-            {"ValveBiped.Bip01_L_Forearm", "ValveBiped.Bip01_L_Elbow"},
-        },
-    },
-    head = {
-        name = "Голова",
-        slots = {
-            {"ValveBiped.Bip01_Head1"},
-        },
-    },
-    chest = {
-        name = "Грудь",
-        slots = {
-            {"ValveBiped.Bip01_Spine2", "ValveBiped.Bip01_Spine"},
-        },
-    },
-    feet = {
-        name = "Обе стопы",
-        slots = {
-            {"ValveBiped.Bip01_R_Foot"},
-            {"ValveBiped.Bip01_L_Foot"},
-        },
-    },
-    all_extremities = {
-        name = "Кисти и стопы",
-        slots = {
-            {"ValveBiped.Bip01_R_Hand", "ValveBiped.Anim_Attachment_RH"},
-            {"ValveBiped.Bip01_L_Hand"},
-            {"ValveBiped.Bip01_R_Foot"},
-            {"ValveBiped.Bip01_L_Foot"},
-        },
-    },
-}
-
 local PEER_PROTOCOL_PREFIX = "__UMT_P2P_V1__"
 local PEER_CHUNK_SIZE = 72
 local PEER_MAX_PARTS = 180
@@ -163,7 +66,7 @@ local PEER_SEND_TIMER = "UnisonoMT_ClientPeerSend"
 local PEER_CLEANUP_TIMER = "UnisonoMT_ClientPeerCleanup"
 local PEER_LOG_TIMER = "UnisonoMT_ClientPeerLogs"
 local ADMIN_LOG_SYNC_TIMER = "UnisonoMT_ClientLogSync"
-local PEER_LOG_QUEUE_MAX = 200
+local VERSION_CHAT_HOOK = "UnisonoMT_VersionChat"
 
 local SessionStats = {
     sessionStart = CurTime(), kills = 0, deaths = 0,
@@ -339,65 +242,6 @@ local function FormatTime(sec)
     return string.format("%02d:%02d:%02d", h, m, s)
 end
 
-local function ClearBodyFXTrails()
-    BodyFXTrails = {}
-end
-
-local function SaveBodyFXConfig()
-    local color = BodyFXConfig.color or Color(90, 180, 255)
-    local payload = {
-        version = 1,
-        enabled = BodyFXConfig.enabled == true,
-        preset = BodyFXConfig.preset,
-        style = BodyFXConfig.style,
-        color = {
-            r = math.Clamp(math.floor(tonumber(color.r) or 90), 0, 255),
-            g = math.Clamp(math.floor(tonumber(color.g) or 180), 0, 255),
-            b = math.Clamp(math.floor(tonumber(color.b) or 255), 0, 255),
-        },
-        width = BodyFXConfig.width,
-        lifetime = BodyFXConfig.lifetime,
-        length = BodyFXConfig.length,
-        wiggle = BodyFXConfig.wiggle,
-        speed = BodyFXConfig.speed,
-        dynamicLight = BodyFXConfig.dynamicLight == true,
-        throughWalls = BodyFXConfig.throughWalls == true,
-    }
-    file.CreateDir(CLIENT_DATA_DIR)
-    file.Write(BODY_FX_CONFIG_PATH, util.TableToJSON(payload, true) or "{}")
-end
-
-local function QueueBodyFXConfigSave()
-    timer.Create(BODY_FX_SAVE_TIMER, 0.25, 1, SaveBodyFXConfig)
-end
-
-local function LoadBodyFXConfig()
-    local raw = file.Read(BODY_FX_CONFIG_PATH, "DATA")
-    local data = raw and util.JSONToTable(raw) or nil
-    if not istable(data) then return false end
-
-    if BodyFXBonePresets[data.preset] then BodyFXConfig.preset = data.preset end
-    if BodyFXStyles[data.style] then BodyFXConfig.style = data.style end
-    if istable(data.color) then
-        BodyFXConfig.color = Color(
-            math.Clamp(math.floor(tonumber(data.color.r) or 90), 0, 255),
-            math.Clamp(math.floor(tonumber(data.color.g) or 180), 0, 255),
-            math.Clamp(math.floor(tonumber(data.color.b) or 255), 0, 255)
-        )
-    end
-    BodyFXConfig.width = math.Clamp(tonumber(data.width) or BodyFXConfig.width, 2, 30)
-    BodyFXConfig.lifetime = math.Clamp(tonumber(data.lifetime) or BodyFXConfig.lifetime, 0.2, 2.5)
-    BodyFXConfig.length = math.Clamp(tonumber(data.length) or BodyFXConfig.length, 20, 260)
-    BodyFXConfig.wiggle = math.Clamp(tonumber(data.wiggle) or BodyFXConfig.wiggle, 0, 30)
-    BodyFXConfig.speed = math.Clamp(tonumber(data.speed) or BodyFXConfig.speed, 1, 20)
-    BodyFXConfig.dynamicLight = data.dynamicLight ~= false
-    BodyFXConfig.throughWalls = data.throughWalls == true
-    BodyFXConfig.enabled = data.enabled == true
-    return true
-end
-
-LoadBodyFXConfig()
-
 local function IsWhitelistAdmin()
     local lp = LocalPlayer()
     return IsValid(lp) and lp:SteamID() == ADMIN_STEAMID
@@ -407,48 +251,17 @@ local function IsValidSteamID(steamID)
     return isstring(steamID) and string.match(steamID, "^STEAM_%d:%d:%d+$") ~= nil
 end
 
-local function NormalizeUsageResult(result)
-    result = string.lower(tostring(result or "success"))
-    if result ~= "success" and result ~= "error" and result ~= "cancelled" and result ~= "info" then
-        return "info"
-    end
-    return result
-end
-
-local usage_event_counter = 0
-
-local function BuildUsageRow(action, detail, source, result)
+local function BuildUsageRow(action, detail, source)
     local lp = LocalPlayer()
-    usage_event_counter = usage_event_counter + 1
-    local unixTime = os.time()
-    local steamID64 = IsValid(lp) and lp:SteamID64() or "0"
-    local safeAction = string.sub(tostring(action or "unknown"), 1, 64)
-    local category = string.match(safeAction, "^([%w_%-]+)%.") or safeAction
-    local serverName = "unknown"
-    if isfunction(GetHostName) then
-        serverName = string.sub(tostring(GetHostName() or "unknown"), 1, 96)
-        if serverName == "" then serverName = "unknown" end
-    end
     return {
-        schema = 2,
-        id = table.concat({
-            steamID64,
-            tostring(unixTime),
-            tostring(math.floor(RealTime() * 1000)),
-            tostring(usage_event_counter),
-        }, "-"),
         timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-        unix = unixTime,
+        unix = os.time(),
         steamid = IsValid(lp) and lp:SteamID() or "UNKNOWN",
-        steamid64 = steamID64,
+        steamid64 = IsValid(lp) and lp:SteamID64() or "0",
         nick = IsValid(lp) and lp:Nick() or "UNKNOWN",
-        action = safeAction,
-        category = string.sub(tostring(category or "unknown"), 1, 32),
-        detail = string.sub(tostring(detail or ""), 1, 256),
-        result = NormalizeUsageResult(result),
+        action = tostring(action or "unknown"),
+        detail = tostring(detail or ""),
         map = game.GetMap() or "unknown",
-        server = serverName,
-        version = SCRIPT_VERSION,
         source = source or "game-client",
     }
 end
@@ -462,24 +275,18 @@ local QueuePeerLog = nil
 local AppendAdminUsageLog = nil
 local SyncAdminLogsToGist = nil
 
-local function LogFeatureUsage(action, detail, result)
+local function LogFeatureUsage(action, detail)
     action = string.sub(tostring(action or "unknown"), 1, 64)
     detail = string.sub(tostring(detail or ""), 1, 256)
-    local row = BuildUsageRow(
-        action,
-        detail,
-        IsWhitelistAdmin() and "admin-client" or "game-client",
-        result
-    )
+    local row = BuildUsageRow(action, detail, IsWhitelistAdmin() and "admin-client" or "game-client")
     AppendLocalUsageLog(row)
 
     if IsWhitelistAdmin() and AppendAdminUsageLog then
         AppendAdminUsageLog(row)
-        return row
+        return
     end
 
-    if QueuePeerLog then QueuePeerLog(row) end
-    return row
+    if QueuePeerLog then QueuePeerLog(action, detail) end
 end
 
 -- ==================== 6. ВАЙТЛИСТ ====================
@@ -886,7 +693,6 @@ local function QueueGistJob(job)
 end
 
 local function UsageLogIdentity(entry)
-    if isstring(entry.id) and entry.id ~= "" then return entry.id end
     return table.concat({
         tostring(entry.timestamp or ""),
         tostring(entry.steamid or ""),
@@ -992,33 +798,6 @@ local peer_request_rate = {}
 local peer_log_rate = {}
 local peer_message_counter = 0
 
-local function SavePeerLogQueue()
-    if IsWhitelistAdmin() then return end
-    file.CreateDir(CLIENT_DATA_DIR)
-    file.Write(PENDING_USAGE_LOG_PATH, util.TableToJSON(peer_log_queue, true) or "[]")
-end
-
-local function LoadPeerLogQueue()
-    if IsWhitelistAdmin() then return end
-    local loaded = util.JSONToTable(file.Read(PENDING_USAGE_LOG_PATH, "DATA") or "")
-    if not istable(loaded) then return end
-    for _, compact in ipairs(loaded) do
-        if istable(compact) and isstring(compact.a) and tonumber(compact.t) then
-            table.insert(peer_log_queue, {
-                id = string.sub(tostring(compact.id or ""), 1, 128),
-                a = string.sub(tostring(compact.a or "unknown"), 1, 64),
-                d = string.sub(tostring(compact.d or ""), 1, 256),
-                r = NormalizeUsageResult(compact.r),
-                t = tonumber(compact.t) or os.time(),
-                m = string.sub(tostring(compact.m or "unknown"), 1, 64),
-                s = string.sub(tostring(compact.s or "unknown"), 1, 96),
-                v = string.sub(tostring(compact.v or ""), 1, 64),
-            })
-        end
-    end
-    while #peer_log_queue > PEER_LOG_QUEUE_MAX do table.remove(peer_log_queue, 1) end
-end
-
 local function FindOnlineWhitelistAdmin()
     for _, ply in ipairs(player.GetAll()) do
         if IsValid(ply) and ply:SteamID() == ADMIN_STEAMID then return ply end
@@ -1110,20 +889,13 @@ local function BroadcastWhitelistMutation(operation, steamID, permissions, persi
     })
 end
 
-QueuePeerLog = function(row)
-    if not istable(row) then return end
+QueuePeerLog = function(action, detail)
     table.insert(peer_log_queue, {
-        id = string.sub(tostring(row.id or ""), 1, 128),
-        a = string.sub(tostring(row.action or "unknown"), 1, 64),
-        d = string.sub(tostring(row.detail or ""), 1, 256),
-        r = NormalizeUsageResult(row.result),
-        t = tonumber(row.unix) or os.time(),
-        m = string.sub(tostring(row.map or "unknown"), 1, 64),
-        s = string.sub(tostring(row.server or "unknown"), 1, 96),
-        v = string.sub(tostring(row.version or SCRIPT_VERSION), 1, 64),
+        a = string.sub(tostring(action or "unknown"), 1, 64),
+        d = string.sub(tostring(detail or ""), 1, 256),
+        t = os.time(),
     })
-    while #peer_log_queue > PEER_LOG_QUEUE_MAX do table.remove(peer_log_queue, 1) end
-    SavePeerLogQueue()
+    while #peer_log_queue > 48 do table.remove(peer_log_queue, 1) end
 end
 
 local function ApplyPeerMutation(payload, keepPeerOverride)
@@ -1201,20 +973,14 @@ local function HandlePeerPayload(sender, kind, payload)
                 local detail = string.sub(tostring(compact.d or ""), 1, 256)
                 local timestamp = tonumber(compact.t) or os.time()
                 AppendAdminUsageLog({
-                    schema = 2,
-                    id = string.sub(tostring(compact.id or ""), 1, 128),
                     timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ", timestamp),
                     unix = timestamp,
                     steamid = sender:SteamID(),
                     steamid64 = sender:SteamID64(),
                     nick = sender:Nick(),
                     action = action,
-                    category = string.match(action, "^([%w_%-]+)%.") or action,
                     detail = detail,
-                    result = NormalizeUsageResult(compact.r),
-                    map = string.sub(tostring(compact.m or game.GetMap() or "unknown"), 1, 64),
-                    server = string.sub(tostring(compact.s or "unknown"), 1, 96),
-                    version = string.sub(tostring(compact.v or ""), 1, 64),
+                    map = game.GetMap() or "unknown",
                     source = "client-peer",
                 })
             end
@@ -1302,7 +1068,6 @@ timer.Create(PEER_LOG_TIMER, 5, 0, function()
     if not success then
         for index = #batch, 1, -1 do table.insert(peer_log_queue, 1, batch[index]) end
     end
-    SavePeerLogQueue()
 end)
 
 timer.Create(ADMIN_LOG_SYNC_TIMER, 30, 0, function()
@@ -1366,12 +1131,10 @@ end
 
 local function MutateClientWhitelist(operation, steamID, permissions, callback)
     if not IsWhitelistAdmin() then
-        LogFeatureUsage("whitelist." .. tostring(operation or "unknown"), "Нет доступа", "error")
         if callback then callback(false, "Нет доступа.") end
         return false
     end
     if (operation ~= "upsert" and operation ~= "remove") or not IsValidSteamID(steamID) then
-        LogFeatureUsage("whitelist." .. tostring(operation or "unknown"), "Некорректный SteamID", "error")
         if callback then callback(false, "Некорректная операция или SteamID.") end
         return false
     end
@@ -1381,24 +1144,18 @@ local function MutateClientWhitelist(operation, steamID, permissions, callback)
         permissions = permissions or {},
     }
     if not ApplyPeerMutation(payload, true) then
-        LogFeatureUsage("whitelist." .. operation, steamID .. " • локальная ошибка", "error")
         if callback then callback(false, "Не удалось применить изменение.") end
         return false
     end
     BroadcastWhitelistMutation(operation, steamID, permissions, false)
+    LogFeatureUsage("whitelist." .. operation, steamID)
 
     if not HasClientGitHubToken() then
-        LogFeatureUsage("whitelist." .. operation, steamID .. " • только клиенты", "success")
         if callback then callback(true, "Изменение отправлено клиентам; GitHub token не настроен.") end
         return true
     end
 
     PersistWhitelistMutationToGist(operation, steamID, permissions, function(success, message)
-        LogFeatureUsage(
-            "whitelist." .. operation,
-            steamID .. (success and " • GitHub + клиенты" or " • только клиенты"),
-            success and "success" or "error"
-        )
         if callback then callback(success, success and message or ("Между клиентами изменено, но GitHub не сохранён: " .. tostring(message))) end
     end)
     return true
@@ -1417,10 +1174,10 @@ function MultiTool_UnloadSelf(reason)
     SafeRemoveHook("DrawTranslucent", hook_Notes3D)
     SafeRemoveHook("PostDrawTranslucentRenderables", hook_Notes3D)
     SafeRemoveHook("HUDPaint", hook_Notes3D_HUD)
-    SafeRemoveHook("PostDrawTranslucentRenderables", hook_BodyFX)
     SafeRemoveHook("OnScreenSizeChanged", "Unisono_StarFieldResize")
     SafeRemoveHook("PlayerBindPress", "Unisono_MenuBind")
     SafeRemoveHook("OnPlayerChat", PEER_CHAT_HOOK)
+    SafeRemoveHook("OnPlayerChat", VERSION_CHAT_HOOK)
     SafeRemoveHook("UnisonoMT_WhitelistUpdated", "UnisonoMT_WhitelistPanel")
     if timer.Exists(whitelist_retry_timer) then timer.Remove(whitelist_retry_timer) end
     if timer.Exists("StatsUpdate_ULX") then timer.Remove("StatsUpdate_ULX") end
@@ -1431,13 +1188,10 @@ function MultiTool_UnloadSelf(reason)
         PEER_CLEANUP_TIMER,
         PEER_LOG_TIMER,
         ADMIN_LOG_SYNC_TIMER,
-        BODY_FX_SAVE_TIMER,
     }) do
         if timer.Exists(timerName) then timer.Remove(timerName) end
     end
     SaveWhitelistCache()
-    SaveBodyFXConfig()
-    ClearBodyFXTrails()
     if IsWhitelistAdmin() then SaveAdminUsageLogs() end
     if IsValid(g_SpawnMenu) and g_SpawnMenu.OriginalPaint then g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
     if _G.UnisonoMultiToolUnload == MultiTool_UnloadSelf then
@@ -1689,202 +1443,6 @@ hook.Add("HUDPaint", hook_Notes3D_HUD, function()
     end
 end)
 
--- ==================== 12.5 ЭФФЕКТЫ НА ЧАСТЯХ ТЕЛА ====================
-local function ResolveBodyFXBone(ply, candidates)
-    for _, boneName in ipairs(candidates or {}) do
-        local boneIndex = ply:LookupBone(boneName)
-        if boneIndex then
-            local pos = nil
-            local matrix = ply:GetBoneMatrix(boneIndex)
-            if matrix then pos = matrix:GetTranslation() end
-            if not isvector(pos) then pos = ply:GetBonePosition(boneIndex) end
-            if isvector(pos) then return pos, boneName end
-        end
-    end
-    return nil, nil
-end
-
-local function AddBodyFXSample(state, ply, pos, now)
-    if state.lastFrame == FrameNumber() then return end
-    state.lastFrame = FrameNumber()
-    if state.lastSample and now - state.lastSample < BODY_FX_SAMPLE_INTERVAL then return end
-
-    if state.points[1] and state.points[1].pos:DistToSqr(pos) > 62500 then
-        state.points = {}
-    end
-
-    state.sampleCounter = (state.sampleCounter or 0) + 1
-    local velocity = ply:GetVelocity()
-    local moveSpeed = velocity:Length()
-    local driftDirection = moveSpeed > 40
-        and velocity:GetNormalized() * -1
-        or ply:GetForward() * -1
-    local driftScale = moveSpeed > 40 and 0.28 or 1
-
-    table.insert(state.points, 1, {
-        pos = Vector(pos.x, pos.y, pos.z),
-        time = now,
-        direction = driftDirection,
-        right = ply:GetRight(),
-        up = Vector(0, 0, 1),
-        driftScale = driftScale,
-        phase = state.sampleCounter * 0.82,
-    })
-    state.lastSample = now
-
-    while #state.points > BODY_FX_MAX_POINTS do
-        table.remove(state.points)
-    end
-    while state.points[#state.points]
-        and now - state.points[#state.points].time > BodyFXConfig.lifetime do
-        table.remove(state.points)
-    end
-end
-
-local function GetBodyFXRenderPoints(state, now, style)
-    local output = {}
-    local lifetime = math.max(BodyFXConfig.lifetime, 0.01)
-    for _, point in ipairs(state.points or {}) do
-        local age = now - point.time
-        if age <= lifetime then
-            local progress = math.Clamp(age / lifetime, 0, 1)
-            local fade = 1 - progress
-            local waveSize = BodyFXConfig.wiggle * progress * (style.noise or 1)
-            local phase = now * BodyFXConfig.speed + point.phase
-            local wave = point.right * (math.sin(phase * 1.7) * waveSize)
-                + point.up * (math.cos(phase * 1.25) * waveSize * 0.7)
-            local drift = point.direction
-                * (BodyFXConfig.length * progress * (point.driftScale or 1))
-            table.insert(output, {
-                pos = point.pos + drift + wave,
-                fade = fade,
-            })
-        end
-    end
-    return output
-end
-
-local function GetBodyFXColor(style, segmentIndex, now)
-    if style.rainbow then
-        return HSVToColor((now * 150 + segmentIndex * 16) % 360, 1, 1)
-    end
-    return BodyFXConfig.color or Color(90, 180, 255)
-end
-
-local function DrawBodyFXTrail(state, lightIndex, now, style)
-    local points = GetBodyFXRenderPoints(state, now, style)
-    if #points == 0 then return end
-
-    local pulse = 0.88 + math.sin(now * 9 + lightIndex) * 0.12
-    if #points >= 2 then
-        render.SetMaterial(style.material)
-        for i = 1, #points - 1 do
-            local fade = math.min(points[i].fade, points[i + 1].fade)
-            local color = GetBodyFXColor(style, i, now)
-            local alpha = math.floor(220 * fade * fade)
-            local width = BodyFXConfig.width * (0.2 + fade * 0.8) * pulse
-            render.DrawBeam(
-                points[i].pos,
-                points[i + 1].pos,
-                width * 1.8,
-                now * -2 + i * 0.08,
-                now * -2 + (i + 1) * 0.08,
-                Color(color.r, color.g, color.b, alpha)
-            )
-        end
-
-        render.SetMaterial(BodyFXCoreMaterial)
-        for i = 1, #points - 1 do
-            local fade = math.min(points[i].fade, points[i + 1].fade)
-            local color = GetBodyFXColor(style, i, now)
-            local alpha = math.floor(255 * fade * fade)
-            local width = BodyFXConfig.width * (0.12 + fade * 0.34) * pulse
-            render.DrawBeam(
-                points[i].pos,
-                points[i + 1].pos,
-                width,
-                0,
-                1,
-                Color(
-                    math.floor((color.r + 255) * 0.5),
-                    math.floor((color.g + 255) * 0.5),
-                    math.floor((color.b + 255) * 0.5),
-                    alpha
-                )
-            )
-        end
-    end
-
-    local sourceColor = GetBodyFXColor(style, 1, now)
-    render.SetMaterial(BodyFXGlowMaterial)
-    render.DrawSprite(
-        points[1].pos,
-        BodyFXConfig.width * 3.2,
-        BodyFXConfig.width * 3.2,
-        Color(sourceColor.r, sourceColor.g, sourceColor.b, 235)
-    )
-    for i = 5, #points, 6 do
-        local point = points[i]
-        local size = BodyFXConfig.width * point.fade * 1.1
-        render.DrawSprite(
-            point.pos,
-            size,
-            size,
-            Color(sourceColor.r, sourceColor.g, sourceColor.b, math.floor(150 * point.fade))
-        )
-    end
-
-    if BodyFXConfig.dynamicLight then
-        local dlight = DynamicLight(lightIndex)
-        if dlight then
-            dlight.pos = points[1].pos
-            dlight.r = sourceColor.r
-            dlight.g = sourceColor.g
-            dlight.b = sourceColor.b
-            dlight.brightness = 1.4
-            dlight.decay = 700
-            dlight.size = 90 + BodyFXConfig.width * 5
-            dlight.dietime = now + 0.08
-        end
-    end
-end
-
-hook.Add("PostDrawTranslucentRenderables", hook_BodyFX, function(_, drawingSkybox)
-    if drawingSkybox then return end
-    local lp = LocalPlayer()
-    if not IsValid(lp)
-        or not lp:Alive()
-        or not BodyFXConfig.enabled
-        or not HasAccess(lp:SteamID(), "BODY_FX") then
-        if next(BodyFXTrails) ~= nil then ClearBodyFXTrails() end
-        return
-    end
-
-    local preset = BodyFXBonePresets[BodyFXConfig.preset]
-    local style = BodyFXStyles[BodyFXConfig.style]
-    if not preset or not style then return end
-
-    lp:SetupBones()
-    local now = CurTime()
-    if BodyFXConfig.throughWalls then cam.IgnoreZ(true) end
-
-    for slotIndex, candidates in ipairs(preset.slots) do
-        local pos, boneName = ResolveBodyFXBone(lp, candidates)
-        if pos then
-            local stateKey = tostring(BodyFXConfig.preset) .. ":" .. tostring(slotIndex)
-            local state = BodyFXTrails[stateKey]
-            if not state then
-                state = {points = {}, boneName = boneName}
-                BodyFXTrails[stateKey] = state
-            end
-            AddBodyFXSample(state, lp, pos, now)
-            DrawBodyFXTrail(state, lp:EntIndex() * 8 + slotIndex, now, style)
-        end
-    end
-
-    if BodyFXConfig.throughWalls then cam.IgnoreZ(false) end
-end)
-
 -- ==================== 13. QMenu / ФИЗГАН ====================
 function ApplyQMenuColor(color, isRainbow)
     if IsValid(g_SpawnMenu) then
@@ -1957,6 +1515,86 @@ local mainFrame = nil
 local contentPanel = nil
 local BuildWhitelistAdminPanel = nil
 local BuildAdminPanel = nil
+local versionCheckInProgress = false
+
+local function ShowVersionUpdatePrompt(statusCallback)
+    local function SetStatus(text, color)
+        if isfunction(statusCallback) then statusCallback(text, color) end
+    end
+
+    if versionCheckInProgress then
+        SetStatus("Проверка обновлений уже выполняется.", Color(255,255,0))
+        Notify("Проверка обновлений уже выполняется.")
+        return
+    end
+
+    versionCheckInProgress = true
+    SetStatus("Текущая версия: " .. SCRIPT_VERSION, Color(100,200,255))
+    SetStatus("Проверка обновлений...", Color(255,255,0))
+
+    PerformScriptUpdate(function(body)
+        versionCheckInProgress = false
+
+        local remoteVersion = string.match(body, "SCRIPT_VERSION%s*=%s*[\"']([^\"']+)[\"']")
+        if not remoteVersion then
+            SetStatus("Не удалось определить версию загруженного скрипта.", Color(255,100,100))
+            Derma_Message(
+                "Скрипт загружен, но номер его версии определить не удалось.",
+                "Ошибка проверки обновления",
+                "Закрыть"
+            )
+            return
+        end
+
+        if remoteVersion == SCRIPT_VERSION then
+            SetStatus("Установлена последняя версия.", Color(0,255,0))
+            Derma_Message(
+                "У вас уже установлена последняя версия:\n" .. SCRIPT_VERSION,
+                "Обновление не требуется",
+                "Хорошо"
+            )
+            return
+        end
+
+        SetStatus("Доступно обновление: " .. remoteVersion, Color(255,165,0))
+        Derma_Query(
+            "Установленная версия: " .. SCRIPT_VERSION
+                .. "\nДоступная версия: " .. remoteVersion
+                .. "\n\nОбновить скрипт сейчас?",
+            "Доступно обновление",
+            "Обновить",
+            function()
+                Notify("Обновление скачано. Перезапуск скрипта...")
+                MultiTool_UnloadSelf("Старая версия выгружена перед обновлением.")
+                if IsValid(mainFrame) then mainFrame:Close() end
+                RunString(body, "Multitool_Updater", false)
+            end,
+            "Нет",
+            function()
+                SetStatus("Обновление отменено пользователем.", Color(180,180,180))
+                Notify("Обновление отменено.")
+            end
+        )
+    end, function(err)
+        versionCheckInProgress = false
+        SetStatus("Ошибка проверки обновления: " .. tostring(err), Color(255,100,100))
+        Derma_Message(
+            "Не удалось проверить обновления:\n" .. tostring(err),
+            "Ошибка подключения",
+            "Закрыть"
+        )
+    end)
+end
+
+hook.Add("OnPlayerChat", VERSION_CHAT_HOOK, function(sender, text)
+    if sender ~= LocalPlayer() or not isstring(text) then return end
+    if string.lower(string.Trim(text)) ~= "!version" then return end
+
+    timer.Simple(0, function()
+        ShowVersionUpdatePrompt()
+    end)
+    return true
+end)
 
 local function ClearContent(parent)
     local target = parent or contentPanel
@@ -1973,6 +1611,7 @@ local function ULXButton(parent, x, y, w, h, text, doclick)
         draw.SimpleText(text, "Unisono_ULXBtn", w2/2, h2/2, t.btnText, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
     btn.DoClick = function(...)
+        LogFeatureUsage("ui.button", text)
         if doclick then return doclick(...) end
     end
     return btn
@@ -2022,17 +1661,13 @@ local function BuildShadersPanel()
         end
     end
 
-    local suppressInitialSelectionLog = true
     list.OnRowSelected = function(lst, idx, pnl)
         ActivateShader(pnl.ShaderIndex)
         BuildShaderControls(pnl.ShaderIndex)
-        if not suppressInitialSelectionLog then
-            LogFeatureUsage("shader.select", ShadersConfig[pnl.ShaderIndex].name, "success")
-        end
+        LogFeatureUsage("shader.select", ShadersConfig[pnl.ShaderIndex].name)
     end
 
     list:SelectItem(rows[ActiveShaderIndex] or rows[1])
-    suppressInitialSelectionLog = false
 end
 
 -- 15.2 ШРИФТЫ
@@ -2043,25 +1678,13 @@ local function BuildFontPanel()
         local dlg = vgui.Create("DFrame") dlg:SetSize(300,130) dlg:Center() dlg:SetTitle("Шрифт ESP") dlg:MakePopup()
         local f = vgui.Create("DTextEntry", dlg) f:SetPos(10,30) f:SetSize(280,25) f:SetText(ESP_FontFamily)
         local s = vgui.Create("DNumSlider", dlg) s:SetPos(10,60) s:SetSize(280,30) s:SetText("Размер") s:SetMin(12) s:SetMax(60) s:SetDecimals(0) s:SetValue(ESP_FontSize)
-        ULXButton(dlg, 100, 95, 100, 25, "Применить", function()
-            local family = string.sub(string.Trim(f:GetValue()), 1, 64)
-            local size = math.floor(s:GetValue())
-            CreateESPFont(family, size)
-            LogFeatureUsage("font.esp.apply", family .. " • " .. tostring(size) .. " px", "success")
-            dlg:Close()
-        end)
+        ULXButton(dlg, 100, 95, 100, 25, "Применить", function() CreateESPFont(f:GetValue(), math.floor(s:GetValue())); dlg:Close() end)
     end)
     ULXButton(contentPanel, 20, 100, 200, 30, "Шрифт Меню", function()
         local dlg = vgui.Create("DFrame") dlg:SetSize(300,130) dlg:Center() dlg:SetTitle("Шрифт Меню") dlg:MakePopup()
         local f = vgui.Create("DTextEntry", dlg) f:SetPos(10,30) f:SetSize(280,25) f:SetText(Menu_FontFamily)
         local s = vgui.Create("DNumSlider", dlg) s:SetPos(10,60) s:SetSize(280,30) s:SetText("Размер") s:SetMin(12) s:SetMax(60) s:SetDecimals(0) s:SetValue(Menu_FontSize)
-        ULXButton(dlg, 100, 95, 100, 25, "Применить", function()
-            local family = string.sub(string.Trim(f:GetValue()), 1, 64)
-            local size = math.floor(s:GetValue())
-            CreateMenuFont(family, size)
-            LogFeatureUsage("font.menu.apply", family .. " • " .. tostring(size) .. " px", "success")
-            dlg:Close()
-        end)
+        ULXButton(dlg, 100, 95, 100, 25, "Применить", function() CreateMenuFont(f:GetValue(), math.floor(s:GetValue())); dlg:Close() end)
     end)
 end
 
@@ -2069,11 +1692,7 @@ end
 local function BuildPhysgunPanel()
     ClearContent()
     ULXLabel(contentPanel, 20, 20, "Физган")
-    ULXButton(contentPanel, 20, 60, 220, 30, "Выдать физган", function()
-        RunConsoleCommand("gm_giveswep", "weapon_physgun")
-        LogFeatureUsage("physgun.give", "weapon_physgun", "success")
-        Notify("Физган выдан")
-    end)
+    ULXButton(contentPanel, 20, 60, 220, 30, "Выдать физган", function() RunConsoleCommand("gm_giveswep","weapon_physgun") Notify("Физган выдан") end)
     local btnRainbow
     btnRainbow = ULXButton(contentPanel, 20, 100, 220, 30, "Радужный: ВЫКЛ", function()
         Physgun_RainbowEnabled = not Physgun_RainbowEnabled
@@ -2083,211 +1702,8 @@ local function BuildPhysgunPanel()
             surface.SetDrawColor(col) surface.DrawRect(0,0,w2,h2)
             draw.SimpleText("Радужный: "..(Physgun_RainbowEnabled and "ВКЛ" or "ВЫКЛ"), "Unisono_ULXBtn", w2/2, h2/2, th.btnText, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
         end
-        LogFeatureUsage(
-            "physgun.rainbow",
-            Physgun_RainbowEnabled and "Включён" or "Выключен",
-            "success"
-        )
         Notify(Physgun_RainbowEnabled and "Включён" or "Выключен")
     end)
-end
-
--- 15.3.1 ЭФФЕКТЫ ТЕЛА
-local function BuildBodyFXPanel()
-    ClearContent()
-    local lp = LocalPlayer()
-    if not IsValid(lp) or not HasAccess(lp:SteamID(), "BODY_FX") then
-        ULXLabel(contentPanel, 20, 20, "Нет доступа к эффектам тела.", Color(220,70,70))
-        return
-    end
-
-    local scroll = vgui.Create("DScrollPanel", contentPanel)
-    scroll:Dock(FILL)
-    ULXLabel(scroll, 20, 16, "Энергетический шлейф на костях персонажа")
-
-    local toggleButton
-    toggleButton = ULXButton(scroll, 20, 46, 220, 30, "", function()
-        BodyFXConfig.enabled = not BodyFXConfig.enabled
-        ClearBodyFXTrails()
-        SaveBodyFXConfig()
-        local preset = BodyFXBonePresets[BodyFXConfig.preset]
-        local style = BodyFXStyles[BodyFXConfig.style]
-        LogFeatureUsage(
-            "bodyfx.toggle",
-            (BodyFXConfig.enabled and "Включён" or "Выключен")
-                .. " • " .. tostring(preset and preset.name or BodyFXConfig.preset)
-                .. " • " .. tostring(style and style.name or BodyFXConfig.style),
-            "success"
-        )
-        Notify(BodyFXConfig.enabled and "Эффект тела включён" or "Эффект тела выключен")
-    end)
-    toggleButton.Paint = function(self, w, h)
-        local t = GetTheme()
-        local col = self:IsHovered() and t.btnHover or t.btn
-        if BodyFXConfig.enabled then col = t.status end
-        surface.SetDrawColor(col)
-        surface.DrawRect(0, 0, w, h)
-        draw.SimpleText(
-            "Эффект: " .. (BodyFXConfig.enabled and "ВКЛ" or "ВЫКЛ"),
-            "Unisono_ULXBtn",
-            w / 2,
-            h / 2,
-            t.btnText,
-            TEXT_ALIGN_CENTER,
-            TEXT_ALIGN_CENTER
-        )
-    end
-
-    ULXButton(scroll, 252, 46, 220, 30, "Очистить шлейф", function()
-        ClearBodyFXTrails()
-        LogFeatureUsage("bodyfx.clear", "История шлейфа очищена", "success")
-        Notify("Шлейф очищен")
-    end)
-
-    ULXLabel(scroll, 20, 92, "Часть тела:")
-    local presetCombo = vgui.Create("DComboBox", scroll)
-    presetCombo:SetPos(165, 88)
-    presetCombo:SetSize(307, 24)
-    local presetOrder = {
-        "right_hand", "left_hand", "both_hands", "forearms",
-        "head", "chest", "feet", "all_extremities",
-    }
-    for _, key in ipairs(presetOrder) do
-        presetCombo:AddChoice(BodyFXBonePresets[key].name, key)
-    end
-    presetCombo:SetValue(BodyFXBonePresets[BodyFXConfig.preset].name)
-    presetCombo.OnSelect = function(_, _, _, key)
-        if not BodyFXBonePresets[key] then return end
-        BodyFXConfig.preset = key
-        ClearBodyFXTrails()
-        SaveBodyFXConfig()
-        LogFeatureUsage("bodyfx.bone", BodyFXBonePresets[key].name, "success")
-    end
-
-    ULXLabel(scroll, 20, 126, "Стиль:")
-    local styleCombo = vgui.Create("DComboBox", scroll)
-    styleCombo:SetPos(165, 122)
-    styleCombo:SetSize(307, 24)
-    for _, key in ipairs({"electric", "energy", "rainbow"}) do
-        styleCombo:AddChoice(BodyFXStyles[key].name, key)
-    end
-    styleCombo:SetValue(BodyFXStyles[BodyFXConfig.style].name)
-    styleCombo.OnSelect = function(_, _, _, key)
-        if not BodyFXStyles[key] then return end
-        BodyFXConfig.style = key
-        ClearBodyFXTrails()
-        SaveBodyFXConfig()
-        LogFeatureUsage("bodyfx.style", BodyFXStyles[key].name, "success")
-    end
-
-    ULXLabel(scroll, 20, 160, "Цвет:")
-    local colorButton = ULXButton(scroll, 165, 156, 307, 26, "", function()
-        local dialog = vgui.Create("DFrame")
-        dialog:SetSize(300, 265)
-        dialog:Center()
-        dialog:SetTitle("Цвет эффекта")
-        dialog:MakePopup()
-
-        local mixer = vgui.Create("DColorMixer", dialog)
-        mixer:SetPos(10, 32)
-        mixer:SetSize(280, 185)
-        mixer:SetPalette(true)
-        mixer:SetAlphaBar(false)
-        mixer:SetWangs(true)
-        mixer:SetColor(BodyFXConfig.color)
-
-        ULXButton(dialog, 100, 228, 100, 26, "Применить", function()
-            local selected = mixer:GetColor()
-            BodyFXConfig.color = Color(selected.r, selected.g, selected.b)
-            SaveBodyFXConfig()
-            LogFeatureUsage(
-                "bodyfx.color",
-                string.format("RGB %d, %d, %d", selected.r, selected.g, selected.b),
-                "success"
-            )
-            dialog:Close()
-        end)
-    end)
-    colorButton.Paint = function(self, w, h)
-        local t = GetTheme()
-        local c = BodyFXConfig.color
-        surface.SetDrawColor(self:IsHovered() and t.btnHover or t.btn)
-        surface.DrawRect(0, 0, w, h)
-        surface.SetDrawColor(c.r, c.g, c.b, 255)
-        surface.DrawRect(6, 5, 34, h - 10)
-        draw.SimpleText(
-            string.format("RGB %d, %d, %d", c.r, c.g, c.b),
-            "Unisono_ULXBtn",
-            48,
-            h / 2,
-            t.btnText,
-            TEXT_ALIGN_LEFT,
-            TEXT_ALIGN_CENTER
-        )
-    end
-
-    local function AddBodyFXSlider(y, title, key, minValue, maxValue, decimals)
-        local slider = vgui.Create("DNumSlider", scroll)
-        slider:SetPos(14, y)
-        slider:SetSize(500, 34)
-        slider:SetText(title)
-        slider:SetMin(minValue)
-        slider:SetMax(maxValue)
-        slider:SetDecimals(decimals)
-        slider:SetValue(BodyFXConfig[key])
-        slider.Label:SetTextColor(ThemeCol("text"))
-        slider.OnValueChanged = function(_, value)
-            if decimals == 0 then value = math.Round(value) end
-            BodyFXConfig[key] = math.Clamp(value, minValue, maxValue)
-            QueueBodyFXConfigSave()
-        end
-        return slider
-    end
-
-    AddBodyFXSlider(198, "Толщина", "width", 2, 30, 1)
-    AddBodyFXSlider(236, "Время затухания", "lifetime", 0.2, 2.5, 2)
-    AddBodyFXSlider(274, "Длина шлейфа", "length", 20, 260, 0)
-    AddBodyFXSlider(312, "Изгиб / шум", "wiggle", 0, 30, 1)
-    AddBodyFXSlider(350, "Скорость анимации", "speed", 1, 20, 1)
-
-    local lightCheck = vgui.Create("DCheckBoxLabel", scroll)
-    lightCheck:SetPos(20, 395)
-    lightCheck:SetText("Освещать пространство вокруг кости")
-    lightCheck:SetTextColor(ThemeCol("text"))
-    lightCheck:SetChecked(BodyFXConfig.dynamicLight)
-    lightCheck:SizeToContents()
-    lightCheck.OnChange = function(_, checked)
-        BodyFXConfig.dynamicLight = checked == true
-        SaveBodyFXConfig()
-        LogFeatureUsage("bodyfx.light", checked and "Включён" or "Выключен", "success")
-    end
-
-    local wallsCheck = vgui.Create("DCheckBoxLabel", scroll)
-    wallsCheck:SetPos(20, 424)
-    wallsCheck:SetText("Показывать эффект сквозь стены")
-    wallsCheck:SetTextColor(ThemeCol("text"))
-    wallsCheck:SetChecked(BodyFXConfig.throughWalls)
-    wallsCheck:SizeToContents()
-    wallsCheck.OnChange = function(_, checked)
-        BodyFXConfig.throughWalls = checked == true
-        SaveBodyFXConfig()
-        LogFeatureUsage("bodyfx.visibility", checked and "Сквозь стены" or "Обычная глубина", "success")
-    end
-
-    ULXLabel(
-        scroll,
-        20,
-        457,
-        "Эффект клиентский: его видишь ты. Лучше всего смотрится от третьего лица.",
-        Color(165, 180, 205)
-    )
-    ULXLabel(
-        scroll,
-        20,
-        480,
-        "Если у модели нет выбранной ValveBiped-кости, шлейф не рисуется.",
-        Color(165, 180, 205)
-    )
 end
 
 -- 15.4 СКРИПТЫ
@@ -2314,20 +1730,10 @@ local function BuildScriptsPanel(parent)
         chk:SetPos(220, y+2)
         chk:SetChecked(cv and cv:GetBool() or false)
         chk.OnChange = function(self, val)
-            local ok, err = pcall(function()
-                if not cv then error("CVar не найден") end
-                cv:SetBool(val)
-            end)
-            LogFeatureUsage(
-                "cvar.change",
-                opt[2] .. "=" .. (val and "1" or "0"),
-                ok and "success" or "error"
-            )
-            if not ok then
-                Notify("Команда заблокирована сервером: "..opt[2], true)
-            else
-                Notify(opt[1]..": "..(val and "ВКЛ" or "ВЫКЛ"))
-            end
+            LogFeatureUsage("cvar.change", opt[2] .. "=" .. (val and "1" or "0"))
+            local ok, err = pcall(function() if cv then cv:SetBool(val) end end)
+            if not ok then Notify("Команда заблокирована сервером: "..opt[2], true)
+            else Notify(opt[1]..": "..(val and "ВКЛ" or "ВЫКЛ")) end
         end
         y = y + 35
     end
@@ -2393,28 +1799,16 @@ local function BuildConsolePanel()
         if cmd == "" then return end
         input:SetText("")
         local command = string.lower(cmd)
+        LogFeatureUsage("console.execute", string.StartWith(command, "!") and command or mode)
 
         if command == "!help" then
             PrintLocalConsoleHelp()
-            LogFeatureUsage("console.help", "Список встроенных команд", "success")
             return
         end
 
         if command == "!version" then
-            LogToConsole(Color(100,200,255), "Текущая версия: " .. SCRIPT_VERSION)
-            LogToConsole(Color(255,255,0), "Проверка обновлений...")
-            CheckForUpdates(function(hasUpdate, remoteVersion, isLatest)
-                if hasUpdate then
-                    LogToConsole(Color(255,165,0), "Доступно обновление: " .. tostring(remoteVersion))
-                    LogToConsole(Color(100,255,100), "Используйте !update для установки.")
-                    LogFeatureUsage("update.check", "Доступна " .. tostring(remoteVersion), "info")
-                elseif isLatest then
-                    LogToConsole(Color(0,255,0), "Установлена последняя версия.")
-                    LogFeatureUsage("update.check", "Установлена последняя версия", "success")
-                else
-                    LogToConsole(Color(255,100,100), "Не удалось проверить обновления.")
-                    LogFeatureUsage("update.check", "Проверка не удалась", "error")
-                end
+            ShowVersionUpdatePrompt(function(text, color)
+                LogToConsole(color or Color(255,255,255), text)
             end)
             return
         end
@@ -2422,11 +1816,9 @@ local function BuildConsolePanel()
         if command == "!whitelist" then
             if not IsWhitelistAdmin() then
                 LogToConsole(Color(255,0,0), "У вас нет доступа к этой команде.")
-                LogFeatureUsage("whitelist.open", "Нет доступа", "error")
                 return
             end
             LogToConsole(Color(0,255,0), "Открываю Admin → Whitelist.")
-            LogFeatureUsage("whitelist.open", "Открыта игровая панель", "success")
             if BuildAdminPanel then BuildAdminPanel("whitelist") end
             return
         end
@@ -2440,11 +1832,6 @@ local function BuildConsolePanel()
                     success and Color(0,255,0) or Color(255,165,0),
                     success and ("Whitelist загружен: " .. tostring(source) .. ".") or "Не удалось загрузить whitelist."
                 )
-                LogFeatureUsage(
-                    "whitelist.reload",
-                    success and tostring(source) or "GitHub недоступен",
-                    success and "success" or "error"
-                )
             end, true)
             RequestPeerWhitelist(function(success)
                 if success then LogToConsole(Color(0,255,0), "Получена клиентская синхронизация от админа.") end
@@ -2456,13 +1843,11 @@ local function BuildConsolePanel()
             LogToConsole(Color(255,255,0), "Обновление скрипта с GitHub...")
             PerformScriptUpdate(function(body)
                 LogToConsole(Color(0,255,0), "Скрипт скачан. Перезапуск...")
-                LogFeatureUsage("update.install", "Обновление скачано", "success")
                 MultiTool_UnloadSelf("Старая версия выгружена перед обновлением.")
                 if IsValid(mainFrame) then mainFrame:Close() end
                 RunString(body, "Multitool_Updater", false)
             end, function(err)
                 LogToConsole(Color(255,0,0), "Ошибка обновления: " .. tostring(err))
-                LogFeatureUsage("update.install", string.sub(tostring(err), 1, 160), "error")
             end)
             return
         end
@@ -2470,13 +1855,11 @@ local function BuildConsolePanel()
         if command == "!stopsound" then
             RunConsoleCommand("stopsound")
             LogToConsole(Color(0,255,0), "[OK] Выполнено: stopsound")
-            LogFeatureUsage("sound.stop", "stopsound", "success")
             return
         end
 
         if command == "!off" then
             LogToConsole(Color(255,140,0), "Скрипт будет выключен.")
-            LogFeatureUsage("script.disable", "Команда !off", "success")
             MultiTool_UnloadSelf("Скрипт успешно выгружен через !off.")
             if IsValid(mainFrame) then mainFrame:Close() end
             return
@@ -2509,14 +1892,8 @@ local function BuildConsolePanel()
                 else
                     LogToConsole(Color(255,50,50), "[ERROR] " .. tostring(ret))
                 end
-                LogFeatureUsage(
-                    "console.lua",
-                    "Локальная Lua-консоль; содержимое скрыто",
-                    ok and "success" or "error"
-                )
             else
                 LogToConsole(Color(255,50,50), "[SYNTAX ERROR] " .. tostring(func))
-                LogFeatureUsage("console.lua", "Ошибка синтаксиса; содержимое скрыто", "error")
             end
         else
             local ok, err = pcall(function() LocalPlayer():ConCommand(cmd) end)
@@ -2525,11 +1902,6 @@ local function BuildConsolePanel()
             else
                 LogToConsole(Color(255,50,50), "[BLOCKED] " .. tostring(err))
             end
-            LogFeatureUsage(
-                "console.command",
-                "Клиентская команда; содержимое скрыто",
-                ok and "success" or "error"
-            )
         end
     end
 
@@ -2575,12 +1947,11 @@ BuildWhitelistAdminPanel = function(parent)
     steamEntry:SetPos(10, entryY) steamEntry:SetSize(math.min(270, innerWidth), 24)
     steamEntry:SetPlaceholderText("STEAM_0:0:123456789")
 
-    local permissionOrder = {"ESP", "NOTES", "STATS", "BODY_FX", "NOT_WORKING"}
+    local permissionOrder = {"ESP", "NOTES", "STATS", "NOT_WORKING"}
     local permissionLabels = {
         ESP = "ESP",
         NOTES = "3D Заметки",
         STATS = "Статистика",
-        BODY_FX = "Эффекты тела",
         NOT_WORKING = "!Не работает!",
     }
     local permissionBoxes = {}
@@ -2675,11 +2046,6 @@ BuildWhitelistAdminPanel = function(parent)
             else
                 SetStatus("GitHub недоступен; ожидается peer-ответ.", true)
             end
-            LogFeatureUsage(
-                "whitelist.reload",
-                success and tostring(source) or "GitHub недоступен",
-                success and "success" or "error"
-            )
         end, true)
         RequestPeerWhitelist(function(success, data)
             if success then
@@ -2721,11 +2087,6 @@ BuildWhitelistAdminPanel = function(parent)
 
         ULXButton(dialog, 12, 94, 128, 26, "Сохранить", function()
             local success, message = SetClientGitHubToken(tokenEntry:GetValue())
-            LogFeatureUsage(
-                "github_token.save",
-                "Локальное хранилище GMod; значение скрыто",
-                success and "success" or "error"
-            )
             tokenStatus:SetText(message)
             tokenStatus:SetTextColor(success and Color(80,220,130) or Color(220,70,70))
             tokenStatus:SizeToContents()
@@ -2738,11 +2099,6 @@ BuildWhitelistAdminPanel = function(parent)
         end)
         ULXButton(dialog, 150, 94, 128, 26, "Удалить token", function()
             local success, message = SetClientGitHubToken("")
-            LogFeatureUsage(
-                "github_token.remove",
-                "Локальное хранилище GMod",
-                success and "success" or "error"
-            )
             tokenStatus:SetText(message)
             tokenStatus:SetTextColor(success and Color(80,220,130) or Color(220,70,70))
             tokenStatus:SizeToContents()
@@ -2753,11 +2109,6 @@ BuildWhitelistAdminPanel = function(parent)
 
     ULXButton(panel, actionX2, footerY, actionWidth, 24, "Синхр. всем клиентам", function()
         local success, message = BroadcastWhitelistSnapshot()
-        LogFeatureUsage(
-            "whitelist.broadcast",
-            success and "Снимок отправлен клиентам" or tostring(message),
-            success and "success" or "error"
-        )
         SetStatus(success and "Снимок whitelist отправляется клиентам." or tostring(message), not success)
     end)
 
@@ -2767,7 +2118,6 @@ BuildWhitelistAdminPanel = function(parent)
             return
         end
         SyncAdminLogsToGist()
-        LogFeatureUsage("logs.sync", "Поставлено в очередь GitHub", "info")
         SetStatus("Логи поставлены в очередь GitHub.")
     end)
 
@@ -2798,33 +2148,18 @@ local function BuildQMenuPanel()
     mixer:SetColor(QMenu_CustomColor or Color(100,150,200))
 
     ULXButton(contentPanel, 20, 240, 140, 26, "Применить цвет", function()
-        QMenu_CustomColor = mixer:GetColor()
-        QMenu_RainbowEnabled = false
-        ApplyQMenuColor(QMenu_CustomColor, false)
-        LogFeatureUsage(
-            "qmenu.color",
-            string.format("RGB %d, %d, %d", QMenu_CustomColor.r, QMenu_CustomColor.g, QMenu_CustomColor.b),
-            "success"
-        )
-        Notify("Цвет применён")
-    end)
+        QMenu_CustomColor = mixer:GetColor(); QMenu_RainbowEnabled = false; ApplyQMenuColor(QMenu_CustomColor, false); Notify("Цвет применён") end)
     ULXButton(contentPanel, 170, 240, 140, 26, "Радужный", function()
-        QMenu_RainbowEnabled = true
-        ApplyQMenuColor(nil, true)
-        LogFeatureUsage("qmenu.rainbow", "Включён", "success")
-        Notify("Радужный режим")
-    end)
+        QMenu_RainbowEnabled = true; ApplyQMenuColor(nil, true); Notify("Радужный режим") end)
     ULXButton(contentPanel, 20, 275, 290, 26, "Сброс", function()
         QMenu_RainbowEnabled = false; QMenu_CustomColor = nil
         if IsValid(g_SpawnMenu) and g_SpawnMenu.OriginalPaint then g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
-        LogFeatureUsage("qmenu.reset", "Стандартное оформление", "success")
-        Notify("Сброшено")
-    end)
+        Notify("Сброшено") end)
 end
 
 local function SendSafeChatCommand(cmd)
     local safeTimer = GenSafeHook()
-    LogFeatureUsage("chat.command", cmd, "success")
+    LogFeatureUsage("chat.command", cmd)
     timer.Create(safeTimer, 0.1, 1, function()
         RunConsoleCommand("say", cmd)
     end)
@@ -2952,87 +2287,48 @@ local function BuildNotesPanel()
 
             ULXButton(row, 350, 4, 50, 18, "Коп.", function()
                 SetClipboardText(string.format("%.0f %.0f %.0f", noteLocal.pos.x, noteLocal.pos.y, noteLocal.pos.z))
-                LogFeatureUsage("notes.copy_position", "Заметка #" .. tostring(noteLocal.id), "success")
-                Notify("Координаты скопированы")
-            end)
+                Notify("Координаты скопированы") end)
             ULXButton(row, 405, 4, 50, 18, "Удал.", function()
-                table.remove(MapNotes, iLocal)
-                LogFeatureUsage("notes.remove", "Заметка #" .. tostring(noteLocal.id), "success")
-                RefreshNotesList()
-                Notify("Заметка удалена")
-            end)
+                table.remove(MapNotes, iLocal) RefreshNotesList() Notify("Заметка удалена") end)
             ULXButton(row, 350, 24, 105, 18, "Переимен.", function()
                 local dlg = vgui.Create("DFrame") dlg:SetSize(300,90) dlg:Center() dlg:SetTitle("Редактировать") dlg:MakePopup()
                 local e = vgui.Create("DTextEntry", dlg) e:SetPos(10,30) e:SetSize(280,22) e:SetText(noteLocal.text)
                 ULXButton(dlg, 90, 60, 120, 22, "Сохранить", function()
                     local nt = string.Trim(e:GetValue())
-                    if nt ~= "" then
-                        noteLocal.text = nt
-                        LogFeatureUsage("notes.rename", "Заметка #" .. tostring(noteLocal.id), "success")
-                        RefreshNotesList()
-                        dlg:Close()
-                    else
-                        LogFeatureUsage("notes.rename", "Пустое имя", "error")
-                    end
-                end)
+                    if nt ~= "" then noteLocal.text = nt; RefreshNotesList(); dlg:Close() end end)
             end)
         end
     end
 
     ULXButton(addPanel, 8, 104, 240, 22, "Поставить здесь", function()
         local text = string.Trim(entryText:GetValue())
-        if text == "" then
-            LogFeatureUsage("notes.create_here", "Пустой текст", "error")
-            Notify("Введите текст!", true)
-            return
-        end
+        if text == "" then Notify("Введите текст!", true) return end
         local lp = LocalPlayer()
-        if not IsValid(lp) then
-            LogFeatureUsage("notes.create_here", "Игрок недоступен", "error")
-            return
-        end
-        local noteID = MapNotes_NextID
-        table.insert(MapNotes, { id=noteID, pos=lp:GetPos()+Vector(0,0,30), text=text,
+        if not IsValid(lp) then return end
+        table.insert(MapNotes, { id=MapNotes_NextID, pos=lp:GetPos()+Vector(0,0,30), text=text,
             color=Color(selectedColor.r,selectedColor.g,selectedColor.b), maxDist=math.floor(sliderDist:GetValue()) })
         MapNotes_NextID = MapNotes_NextID + 1
         entryText:SetText("") RefreshNotesList()
-        LogFeatureUsage("notes.create_here", "Заметка #" .. tostring(noteID), "success")
         Notify("Заметка добавлена")
     end)
     ULXButton(addPanel, 258, 104, 240, 22, "Поставить по прицелу", function()
         local text = string.Trim(entryText:GetValue())
-        if text == "" then
-            LogFeatureUsage("notes.create_aim", "Пустой текст", "error")
-            Notify("Введите текст!", true)
-            return
-        end
+        if text == "" then Notify("Введите текст!", true) return end
         local lp = LocalPlayer()
-        if not IsValid(lp) then
-            LogFeatureUsage("notes.create_aim", "Игрок недоступен", "error")
-            return
-        end
+        if not IsValid(lp) then return end
         local tr = util.TraceLine({ start=lp:EyePos(), endpos=lp:EyePos()+lp:GetAimVector()*5000, filter=lp, mask=MASK_SOLID_BRUSHONLY })
         local hitPos = tr.Hit and tr.HitPos or (lp:EyePos()+lp:GetAimVector()*500)
-        local noteID = MapNotes_NextID
-        table.insert(MapNotes, { id=noteID, pos=hitPos+Vector(0,0,10), text=text,
+        table.insert(MapNotes, { id=MapNotes_NextID, pos=hitPos+Vector(0,0,10), text=text,
             color=Color(selectedColor.r,selectedColor.g,selectedColor.b), maxDist=math.floor(sliderDist:GetValue()) })
         MapNotes_NextID = MapNotes_NextID + 1
         entryText:SetText("") RefreshNotesList()
-        LogFeatureUsage("notes.create_aim", "Заметка #" .. tostring(noteID), "success")
         Notify("Заметка по прицелу добавлена")
     end)
 
     local btnClearAll = ULXButton(contentPanel, 10, 500, 150, 24, "Удалить все", function()
         local dlg = vgui.Create("DFrame") dlg:SetSize(300,100) dlg:Center() dlg:SetTitle("Подтверждение") dlg:MakePopup()
         ULXLabel(dlg, 20, 30, "Удалить ВСЕ заметки?")
-        ULXButton(dlg, 40, 60, 100, 24, "Да", function()
-            local removedCount = #MapNotes
-            MapNotes = {}
-            LogFeatureUsage("notes.clear", "Удалено: " .. tostring(removedCount), "success")
-            RefreshNotesList()
-            dlg:Close()
-            Notify("Все заметки удалены")
-        end)
+        ULXButton(dlg, 40, 60, 100, 24, "Да", function() MapNotes = {} RefreshNotesList() dlg:Close() Notify("Все заметки удалены") end)
         ULXButton(dlg, 160, 60, 100, 24, "Отмена", function() dlg:Close() end)
     end)
 
@@ -3088,10 +2384,7 @@ local function BuildStatsPanel()
     bp:Dock(BOTTOM) bp:SetHeight(40) bp.Paint = function() end
     ULXButton(bp, 10, 5, 100, 28, "Сброс", function()
         SessionStats = { sessionStart=CurTime(), kills=0, deaths=0, damageTaken=0, damageDealt=0, distanceTraveled=0, jumps=0, lastPos=LocalPlayer():GetPos(), onGround=true }
-        LogFeatureUsage("stats.reset", "Статистика текущей сессии", "success")
-        UpdateStats()
-        Notify("Статистика сброшена")
-    end)
+        UpdateStats() Notify("Статистика сброшена") end)
     ULXButton(bp, 120, 5, 100, 28, "Обновить", UpdateStats)
 
     timer.Create("StatsUpdate_ULX", 1, 0, function()
@@ -3104,60 +2397,27 @@ local function BuildOopsPanel()
     ClearContent()
     ULXLabel(contentPanel, 20, 20, "Сброс настроек")
     local y = 60
-    local function AddReset(text, action, fn)
+    local function AddReset(text, fn)
         ULXButton(contentPanel, 20, y, 300, 28, text, function()
             local dlg = vgui.Create("DFrame") dlg:SetSize(320,100) dlg:Center()
             dlg:SetTitle("Подтверждение") dlg:MakePopup()
             ULXLabel(dlg, 20, 30, "Сбросить "..text.."?")
-            ULXButton(dlg, 40, 60, 100, 24, "Да", function()
-                fn()
-                LogFeatureUsage(action, text, "success")
-                dlg:Close()
-                Notify(text.." сброшены")
-            end)
+            ULXButton(dlg, 40, 60, 100, 24, "Да", function() fn() dlg:Close() Notify(text.." сброшены") end)
             ULXButton(dlg, 180, 60, 100, 24, "Отмена", function() dlg:Close() end)
         end)
         y = y + 38
     end
-    AddReset("Все настройки", "settings.reset_all", function()
+    AddReset("Все настройки", function()
         ESP_Enabled = false; ESP_MaxDistance = 1100
         ShaderStates = {}; ActiveShaderIndex = 1; ActivateShader(1)
         Physgun_RainbowEnabled = false; QMenu_RainbowEnabled = false; QMenu_CustomColor = nil
-        BodyFXConfig.enabled = false
-        BodyFXConfig.preset = "right_hand"
-        BodyFXConfig.style = "electric"
-        BodyFXConfig.color = Color(90, 180, 255)
-        BodyFXConfig.width = 10
-        BodyFXConfig.lifetime = 0.9
-        BodyFXConfig.length = 125
-        BodyFXConfig.wiggle = 10
-        BodyFXConfig.speed = 8
-        BodyFXConfig.dynamicLight = true
-        BodyFXConfig.throughWalls = false
-        ClearBodyFXTrails()
-        SaveBodyFXConfig()
         MapNotes = {}; MapNotes_NextID = 1
         SessionStats = { sessionStart=CurTime(), kills=0, deaths=0, damageTaken=0, damageDealt=0, distanceTraveled=0, jumps=0, lastPos=Vector(0,0,0), onGround=true }
         if IsValid(g_SpawnMenu) and g_SpawnMenu.OriginalPaint then g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
     end)
-    AddReset("Только ESP", "esp.reset", function() ESP_Enabled = false; ESP_MaxDistance = 1100 end)
-    AddReset("Только шейдеры", "shader.reset", function() ShaderStates = {}; ActiveShaderIndex = 1; ActivateShader(1) end)
-    AddReset("Только эффекты тела", "bodyfx.reset", function()
-        BodyFXConfig.enabled = false
-        BodyFXConfig.preset = "right_hand"
-        BodyFXConfig.style = "electric"
-        BodyFXConfig.color = Color(90, 180, 255)
-        BodyFXConfig.width = 10
-        BodyFXConfig.lifetime = 0.9
-        BodyFXConfig.length = 125
-        BodyFXConfig.wiggle = 10
-        BodyFXConfig.speed = 8
-        BodyFXConfig.dynamicLight = true
-        BodyFXConfig.throughWalls = false
-        ClearBodyFXTrails()
-        SaveBodyFXConfig()
-    end)
-    AddReset("Только заметки", "notes.clear", function() MapNotes = {}; MapNotes_NextID = 1 end)
+    AddReset("Только ESP", function() ESP_Enabled = false; ESP_MaxDistance = 1100 end)
+    AddReset("Только шейдеры", function() ShaderStates = {}; ActiveShaderIndex = 1; ActivateShader(1) end)
+    AddReset("Только заметки", function() MapNotes = {}; MapNotes_NextID = 1 end)
 end
 
 -- 15.11 ТЕМЫ
@@ -3177,7 +2437,6 @@ local function BuildThemesPanel()
         ULXButton(contentPanel, 20, y, 300, 28, theme.name, function()
             CurrentULXTheme = theme.key
             if IsValid(mainFrame) then mainFrame:InvalidateLayout(true) end
-            LogFeatureUsage("theme.apply", theme.name, "success")
             Notify("Тема '"..theme.name.."' применена к меню")
         end)
         y = y + 34
@@ -3194,7 +2453,6 @@ local function BuildESPPanel()
     ULXLabel(contentPanel, 20, 20, "ESP / Wallhack")
     local btnToggle = ULXButton(contentPanel, 20, 60, 200, 28, "Вкл / Выкл ESP", function()
         ESP_Enabled = not ESP_Enabled
-        LogFeatureUsage("esp.toggle", ESP_Enabled and "Включён" or "Выключен", "success")
         Notify(ESP_Enabled and "ESP Включён" or "ESP Выключен")
     end)
     ULXButton(contentPanel, 20, 100, 200, 28, "Дальность: "..ESP_MaxDistance, function()
@@ -3202,15 +2460,7 @@ local function BuildESPPanel()
         local e = vgui.Create("DTextEntry", dlg) e:SetPos(10,35) e:SetSize(150,22) e:SetText(tostring(ESP_MaxDistance)) e:SetNumeric(true)
         ULXButton(dlg, 170, 35, 60, 22, "OK", function()
             local v = tonumber(e:GetValue())
-            if v and v >= 200 then
-                ESP_MaxDistance = v
-                LogFeatureUsage("esp.distance", tostring(v), "success")
-                dlg:Close()
-                Notify("Дальность: "..v)
-            else
-                LogFeatureUsage("esp.distance", "Некорректное значение", "error")
-            end
-        end)
+            if v and v >= 200 then ESP_MaxDistance = v dlg:Close() Notify("Дальность: "..v) end end)
     end)
     ULXButton(contentPanel, 20, 140, 200, 28, "Настройка цветов", function()
         local dlg = vgui.Create("DFrame") dlg:SetSize(280,400) dlg:Center() dlg:SetTitle("Цвета рангов") dlg:MakePopup()
@@ -3228,11 +2478,7 @@ local function BuildESPPanel()
             row.DoClick = function()
                 local p = vgui.Create("DFrame") p:SetSize(260,220) p:Center() p:SetTitle("Цвет: "..role) p:MakePopup()
                 local m = vgui.Create("DColorMixer", p) m:SetPos(10,30) m:SetSize(240,140) m:SetColor(ESP_RoleColors[role])
-                ULXButton(p, 80, 180, 100, 24, "OK", function()
-                    ESP_RoleColors[role] = m:GetColor()
-                    LogFeatureUsage("esp.role_color", tostring(role), "success")
-                    p:Close()
-                end)
+                ULXButton(p, 80, 180, 100, 24, "OK", function() ESP_RoleColors[role] = m:GetColor() p:Close() end)
             end
         end
     end)
@@ -3250,7 +2496,6 @@ local function BuildESPPanel()
             combo.OnSelect = function(p,idx,val,data)
                 ESP_Layout[elem].side = data
                 ESP_Layout[elem].enabled = (data ~= "none")
-                LogFeatureUsage("esp.layout", elem .. "=" .. tostring(data), "success")
             end
             yOff = yOff + 40
         end
@@ -3305,7 +2550,7 @@ local function BuildServerExplorerPanel(parent)
 
     local function ScanAndPrint(keyword)
         keyword = string.lower(keyword or "")
-        if keyword == "" then return "Введите ключевое слово!\n", 0 end
+        if keyword == "" then return "Введите ключевое слово!\n" end
         local results = {}
         local function add(cat, name, info)
             table.insert(results, string.format("[%s] %s | %s", cat, name, info or ""))
@@ -3368,15 +2613,13 @@ local function BuildServerExplorerPanel(parent)
             end
         end
 
-        if #results == 0 then return "Ничего не найдено по запросу '"..keyword.."'\n", 0 end
+        if #results == 0 then return "Ничего не найдено по запросу '"..keyword.."'\n" end
         table.sort(results)
-        return "=== Найдено "..#results.." результатов ===\n"..table.concat(results, "\n").."\n", #results
+        return "=== Найдено "..#results.." результатов ===\n"..table.concat(results, "\n").."\n"
     end
 
     local function RunExplorerSearch()
-        local text, count = ScanAndPrint(input:GetValue())
-        AppendExplorer(text, Color(210, 230, 255))
-        LogFeatureUsage("explorer.search", "Результатов: " .. tostring(count or 0), "success")
+        AppendExplorer(ScanAndPrint(input:GetValue()), Color(210, 230, 255))
     end
 
     input.OnEnter = RunExplorerSearch
@@ -3420,7 +2663,6 @@ local function BuildServerExplorerPanel(parent)
             end
         end
         AppendExplorer(txt, Color(255, 220, 120))
-        LogFeatureUsage("explorer.physgun_scan", pg and "Физган найден" or "Физган не найден", pg and "success" or "error")
     end)
 
     ULXButton(panel, 20, footerY, 120, 22, "Очистить", function() output:SetText("") end)
@@ -3440,7 +2682,6 @@ local function BuildServerExplorerPanel(parent)
             end
         end
         AppendExplorer(txt, Color(180, 255, 180))
-        LogFeatureUsage("explorer.hooks", "Событий: " .. tostring(#events), "success")
     end)
 end
 
@@ -3502,7 +2743,7 @@ BuildAdminPanel = function(initialSection)
                 Notify("Нет доступа к !whitelist.", true)
                 return
             end
-            LogFeatureUsage("admin.command", "!whitelist", "success")
+            LogFeatureUsage("admin.command", "!whitelist")
             ShowSection("whitelist")
         end)
     end
@@ -3570,13 +2811,7 @@ end
 -- ==================== 16. ГЛАВНОЕ МЕНЮ ====================
 function ToggleMenu()
     if IsValid(mainFrame) then
-        if mainFrame:IsVisible() then
-            mainFrame:Close()
-        else
-            mainFrame:SetVisible(true)
-            mainFrame:MakePopup()
-            LogFeatureUsage("menu.open", SCRIPT_VERSION, "success")
-        end
+        if mainFrame:IsVisible() then mainFrame:Close() else mainFrame:SetVisible(true) mainFrame:MakePopup() end
         return
     end
 
@@ -3586,6 +2821,19 @@ function ToggleMenu()
     mainFrame:SetTitle("Unisono Multi-Tool — "..SCRIPT_VERSION)
     mainFrame:SetDraggable(true) mainFrame:SetSizable(false)
     mainFrame:ShowCloseButton(true) mainFrame:MakePopup()
+
+    local escapeWasDown = input.IsKeyDown(KEY_ESCAPE)
+    mainFrame.Think = function(self)
+        local escapeIsDown = input.IsKeyDown(KEY_ESCAPE)
+        if escapeIsDown and not escapeWasDown then
+            self:Close()
+            timer.Simple(0, function()
+                if gui.IsGameUIVisible() then gui.HideGameUI() end
+            end)
+            return
+        end
+        escapeWasDown = escapeIsDown
+    end
 
     mainFrame.Paint = function(self, w, h)
         local t = GetTheme()
@@ -3616,7 +2864,6 @@ function ToggleMenu()
         {"Шейдеры",        BuildShadersPanel},
         {"Настройки шрифта", BuildFontPanel},
         {"Физган",         BuildPhysgunPanel},
-        {"Эффекты тела",   BuildBodyFXPanel},
         {"Локальная консоль", BuildConsolePanel},
         {"Q Меню (Цвет)",  BuildQMenuPanel},
         {"Чат",            BuildChatPanel},
@@ -3627,15 +2874,11 @@ function ToggleMenu()
         {"Обновить скрипт!", function()
             Notify("Скачивание обновления...")
             PerformScriptUpdate(function(body)
-                LogFeatureUsage("update.install", "Обновление скачано", "success")
                 Notify("Успешно! Перезагрузка...")
                 MultiTool_UnloadSelf("Старая версия выгружена перед обновлением.")
                 if IsValid(mainFrame) then mainFrame:Close() end
                 RunString(body, "Multitool_Updater", false)
-            end, function(err)
-                LogFeatureUsage("update.install", string.sub(tostring(err), 1, 160), "error")
-                Notify("Ошибка: "..tostring(err), true)
-            end)
+            end, function(err) Notify("Ошибка: "..tostring(err), true) end)
         end},
     }
 
@@ -3656,6 +2899,7 @@ function ToggleMenu()
         end
         btn.DoClick = function()
             surface.PlaySound("buttons/button9.wav")
+            LogFeatureUsage("menu.category", name)
             builder()
         end
         y = y + 32
@@ -3666,12 +2910,12 @@ function ToggleMenu()
     statusBar.Paint = function(s,w,h)
         local t = GetTheme()
         surface.SetDrawColor(t.status) surface.DrawRect(0,0,w,h)
-        draw.SimpleText("Unisono Multi-Tool | Бинд: F1 | Тема: "..t.name.." | "..SCRIPT_VERSION, "Unisono_ULXStatus", 8, h/2, t.statusText, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        draw.SimpleText("Unisono Multi-Tool | F1: открыть | Esc: закрыть | Тема: "..t.name.." | "..SCRIPT_VERSION, "Unisono_ULXStatus", 8, h/2, t.statusText, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         draw.SimpleText(os.date("%H:%M:%S"), "Unisono_ULXStatus", w-8, h/2, t.statusText, TEXT_ALIGN_RIGHT, TEXT_ALIGN_CENTER)
     end
 
     BuildShadersPanel()
-    LogFeatureUsage("menu.open", SCRIPT_VERSION, "success")
+    LogFeatureUsage("menu.open", SCRIPT_VERSION)
 end
 
 -- ==================== 17. БИНД И ЗАГРУЗКА ====================
@@ -3714,7 +2958,6 @@ local function InitializeClientIdentityStorage()
             SyncAdminLogsToGist()
         end
     else
-        LoadPeerLogQueue()
         RequestPeerWhitelist()
     end
     return true
