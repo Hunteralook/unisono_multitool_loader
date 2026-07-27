@@ -1,12 +1,12 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.7.2 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.7.4 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist и логи синхронизируются
 --  между клиентами без пользовательского серверного Lua.
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.7.2"
+local SCRIPT_VERSION = "v1.7.4"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -39,15 +39,17 @@ local SaveProcessedClientCommands = nil
 local safePrefixes = {"UpdateUI_", "RenderMatrix_", "CalcViewOffset_", "ProcessNet_"}
 local function GenSafeHook() return safePrefixes[math.random(1, #safePrefixes)] .. tostring(math.random(10000, 99999)) end
 
-local hook_ESP       = GenSafeHook()
-local hook_Star      = GenSafeHook()
-local hook_Shader    = GenSafeHook()
-local hook_Key       = GenSafeHook()
-local hook_RGB       = GenSafeHook()
-local hook_Stats     = GenSafeHook()
-local hook_Notes3D   = GenSafeHook()
-local hook_Notes3D_HUD = GenSafeHook()
-local hook_BodyFX    = GenSafeHook()
+local RuntimeHooks = {
+    ESP = GenSafeHook(),
+    Star = GenSafeHook(),
+    Shader = GenSafeHook(),
+    Key = GenSafeHook(),
+    RGB = GenSafeHook(),
+    Stats = GenSafeHook(),
+    Notes3D = GenSafeHook(),
+    Notes3DHUD = GenSafeHook(),
+    BodyFX = GenSafeHook(),
+}
 
 -- The skybox feature is kept in one table so the root Lua chunk stays well
 -- below LuaJIT's 200-local limit.
@@ -76,6 +78,163 @@ local SkyboxFeature = {
     suffixes = {"ft", "bk", "lf", "rt", "up", "dn"},
     materials = {},
     lastError = nil,
+}
+
+-- World lighting, local weather and the player trail are grouped into feature
+-- tables so the root chunk does not approach LuaJIT's 200-local limit.
+local VisualFeatures = {}
+
+VisualFeatures.Atmosphere = {
+    configPath = CLIENT_DATA_DIR .. "/world_lighting.json",
+    saveTimer = "UnisonoMT_WorldLightingSave",
+    screenHook = GenSafeHook(),
+    worldFogHook = GenSafeHook(),
+    skyFogHook = GenSafeHook(),
+    config = {
+        enabled = false,
+        color = Color(255, 255, 255),
+        tintStrength = 0.35,
+        brightness = 0,
+        contrast = 1,
+        saturation = 1,
+        nightMode = false,
+        fogEnabled = false,
+        fogColor = Color(155, 175, 195),
+        fogStart = 250,
+        fogEnd = 3500,
+        fogDensity = 0.82,
+    },
+}
+
+VisualFeatures.Weather = {
+    configPath = CLIENT_DATA_DIR .. "/weather.json",
+    saveTimer = "UnisonoMT_WeatherSave",
+    thinkHook = GenSafeHook(),
+    drawHook = GenSafeHook(),
+    config = {
+        enabled = false,
+        weather = "rain",
+        intensity = 1,
+        radius = 900,
+        wind = 1,
+        lightning = true,
+        indoorCheck = true,
+    },
+    presets = {
+        rain = {
+            name = "Дождь",
+            mode = "rain",
+            amount = 105,
+            color = Color(145, 190, 235),
+            screen = {brightness = -0.025, contrast = 0.98, saturation = 0.88, tint = Color(185, 210, 235)},
+            fog = {color = Color(120, 145, 165), start = 450, finish = 4200, density = 0.64},
+        },
+        snow = {
+            name = "Снег",
+            mode = "snow",
+            amount = 82,
+            color = Color(235, 250, 255),
+            screen = {brightness = 0.015, contrast = 0.97, saturation = 0.86, tint = Color(225, 240, 255)},
+            fog = {color = Color(205, 220, 230), start = 350, finish = 3600, density = 0.7},
+        },
+        storm = {
+            name = "Гроза",
+            mode = "rain",
+            amount = 145,
+            color = Color(115, 165, 225),
+            screen = {brightness = -0.11, contrast = 1.06, saturation = 0.7, tint = Color(150, 175, 220)},
+            fog = {color = Color(70, 85, 110), start = 300, finish = 3000, density = 0.78},
+        },
+        ash = {
+            name = "Пепел",
+            mode = "ash",
+            amount = 72,
+            color = Color(155, 145, 135),
+            screen = {brightness = -0.06, contrast = 0.96, saturation = 0.55, tint = Color(185, 150, 125)},
+            fog = {color = Color(105, 90, 80), start = 280, finish = 2600, density = 0.76},
+        },
+        sand = {
+            name = "Песчаная буря",
+            mode = "sand",
+            amount = 135,
+            color = Color(225, 170, 95),
+            screen = {brightness = 0.025, contrast = 1.04, saturation = 0.68, tint = Color(235, 185, 105)},
+            fog = {color = Color(185, 135, 75), start = 110, finish = 1450, density = 0.9},
+        },
+    },
+    order = {"rain", "snow", "storm", "ash", "sand"},
+    particles = {},
+    flash = 0,
+    thunderAt = nil,
+    nextLightning = 0,
+    lastThink = CurTime(),
+    nextRoofCheck = 0,
+    indoors = false,
+    materials = {
+        streak = Material("trails/laser"),
+        glow = Material("sprites/light_glow02_add"),
+        smoke = Material("particle/particle_smokegrenade"),
+    },
+    thunderSounds = {
+        "ambient/atmosphere/thunder1.wav",
+        "ambient/atmosphere/thunder2.wav",
+        "ambient/atmosphere/thunder3.wav",
+    },
+}
+
+VisualFeatures.PlayerTrail = {
+    configPath = CLIENT_DATA_DIR .. "/player_trail.json",
+    saveTimer = "UnisonoMT_PlayerTrailSave",
+    thinkHook = GenSafeHook(),
+    drawHook = GenSafeHook(),
+    config = {
+        enabled = false,
+        style = "fire",
+        width = 14,
+        lifetime = 1.4,
+        density = 1,
+        intensity = 1,
+        particles = true,
+        glow = true,
+        throughWalls = false,
+    },
+    styles = {
+        fire = {
+            name = "Огонь",
+            material = Material("trails/laser"),
+            palette = {Color(255, 245, 145), Color(255, 145, 25), Color(235, 55, 12)},
+            paletteSpeed = 8,
+        },
+        ice = {
+            name = "Лёд",
+            material = Material("trails/laser"),
+            palette = {Color(220, 250, 255), Color(75, 175, 255)},
+        },
+        lightning = {
+            name = "Молнии",
+            material = Material("trails/electric"),
+            palette = {Color(80, 165, 255), Color(80, 165, 255), Color(255, 255, 255)},
+        },
+        rainbow = {name = "Радуга", material = Material("trails/laser")},
+        smoke = {
+            name = "Дым",
+            material = Material("particle/particle_smokegrenade"),
+            color = Color(150, 155, 165),
+        },
+        footsteps = {name = "Светящиеся шаги", material = Material("sprites/light_glow02_add")},
+    },
+    order = {"fire", "ice", "lightning", "rainbow", "smoke", "footsteps"},
+    points = {},
+    footprints = {},
+    lastSample = 0,
+    lastPos = nil,
+    lastFootPos = nil,
+    footSide = 1,
+    sampleCounter = 0,
+    maxPoints = 80,
+    maxFootprints = 36,
+    coreMaterial = Material("sprites/physbeam"),
+    glowMaterial = Material("sprites/light_glow02_add"),
 }
 
 local ESP_Enabled = false
@@ -786,6 +945,851 @@ end)
 
 hook.Add("PostDraw2DSkyBox", SkyboxFeature.postDrawHook, function()
     if SkyboxFeature.config.enabled then SkyboxFeature.Draw() end
+end)
+
+-- ==================== 5.2 РЕДАКТОР ОСВЕЩЕНИЯ И ТУМАНА ====================
+function VisualFeatures.Atmosphere.Save()
+    local cfg = VisualFeatures.Atmosphere.config
+    local worldColor = cfg.color or Color(255, 255, 255)
+    local fogColor = cfg.fogColor or Color(155, 175, 195)
+    local payload = {
+        version = 1,
+        enabled = cfg.enabled == true,
+        color = {
+            r = math.Clamp(math.floor(tonumber(worldColor.r) or 255), 0, 255),
+            g = math.Clamp(math.floor(tonumber(worldColor.g) or 255), 0, 255),
+            b = math.Clamp(math.floor(tonumber(worldColor.b) or 255), 0, 255),
+        },
+        tintStrength = math.Clamp(tonumber(cfg.tintStrength) or 0.35, 0, 1),
+        brightness = math.Clamp(tonumber(cfg.brightness) or 0, -0.5, 0.5),
+        contrast = math.Clamp(tonumber(cfg.contrast) or 1, 0.5, 2),
+        saturation = math.Clamp(tonumber(cfg.saturation) or 1, 0, 2),
+        nightMode = cfg.nightMode == true,
+        fogEnabled = cfg.fogEnabled == true,
+        fogColor = {
+            r = math.Clamp(math.floor(tonumber(fogColor.r) or 155), 0, 255),
+            g = math.Clamp(math.floor(tonumber(fogColor.g) or 175), 0, 255),
+            b = math.Clamp(math.floor(tonumber(fogColor.b) or 195), 0, 255),
+        },
+        fogStart = math.Clamp(tonumber(cfg.fogStart) or 250, 0, 5000),
+        fogEnd = math.Clamp(tonumber(cfg.fogEnd) or 3500, 128, 12000),
+        fogDensity = math.Clamp(tonumber(cfg.fogDensity) or 0.82, 0.05, 1),
+    }
+    file.CreateDir(CLIENT_DATA_DIR)
+    file.Write(VisualFeatures.Atmosphere.configPath, util.TableToJSON(payload, true) or "{}")
+end
+
+function VisualFeatures.Atmosphere.QueueSave()
+    timer.Create(VisualFeatures.Atmosphere.saveTimer, 0.25, 1, VisualFeatures.Atmosphere.Save)
+end
+
+function VisualFeatures.Atmosphere.Load()
+    local raw = file.Read(VisualFeatures.Atmosphere.configPath, "DATA")
+    local data = raw and util.JSONToTable(raw) or nil
+    if not istable(data) then return false end
+
+    local cfg = VisualFeatures.Atmosphere.config
+    if istable(data.color) then
+        cfg.color = Color(
+            math.Clamp(math.floor(tonumber(data.color.r) or 255), 0, 255),
+            math.Clamp(math.floor(tonumber(data.color.g) or 255), 0, 255),
+            math.Clamp(math.floor(tonumber(data.color.b) or 255), 0, 255)
+        )
+    end
+    if istable(data.fogColor) then
+        cfg.fogColor = Color(
+            math.Clamp(math.floor(tonumber(data.fogColor.r) or 155), 0, 255),
+            math.Clamp(math.floor(tonumber(data.fogColor.g) or 175), 0, 255),
+            math.Clamp(math.floor(tonumber(data.fogColor.b) or 195), 0, 255)
+        )
+    end
+    cfg.enabled = data.enabled == true
+    cfg.tintStrength = math.Clamp(tonumber(data.tintStrength) or 0.35, 0, 1)
+    cfg.brightness = math.Clamp(tonumber(data.brightness) or 0, -0.5, 0.5)
+    cfg.contrast = math.Clamp(tonumber(data.contrast) or 1, 0.5, 2)
+    cfg.saturation = math.Clamp(tonumber(data.saturation) or 1, 0, 2)
+    cfg.nightMode = data.nightMode == true
+    cfg.fogEnabled = data.fogEnabled == true
+    cfg.fogStart = math.Clamp(tonumber(data.fogStart) or 250, 0, 5000)
+    cfg.fogEnd = math.Clamp(tonumber(data.fogEnd) or 3500, 128, 12000)
+    cfg.fogDensity = math.Clamp(tonumber(data.fogDensity) or 0.82, 0.05, 1)
+    return true
+end
+
+function VisualFeatures.Atmosphere.Reset()
+    VisualFeatures.Atmosphere.config = {
+        enabled = false,
+        color = Color(255, 255, 255),
+        tintStrength = 0.35,
+        brightness = 0,
+        contrast = 1,
+        saturation = 1,
+        nightMode = false,
+        fogEnabled = false,
+        fogColor = Color(155, 175, 195),
+        fogStart = 250,
+        fogEnd = 3500,
+        fogDensity = 0.82,
+    }
+    VisualFeatures.Atmosphere.Save()
+end
+
+function VisualFeatures.Atmosphere.GetFogConfig()
+    local cfg = VisualFeatures.Atmosphere.config
+    if cfg.fogEnabled then
+        local startDistance = math.Clamp(tonumber(cfg.fogStart) or 250, 0, 5000)
+        local endDistance = math.max(
+            startDistance + 64,
+            math.Clamp(tonumber(cfg.fogEnd) or 3500, 128, 12000)
+        )
+        return {
+            color = cfg.fogColor or Color(155, 175, 195),
+            start = startDistance,
+            finish = endDistance,
+            density = math.Clamp(tonumber(cfg.fogDensity) or 0.82, 0.05, 1),
+        }
+    end
+
+    if VisualFeatures.Weather.config.indoorCheck and VisualFeatures.Weather.indoors then
+        return nil
+    end
+    local preset = VisualFeatures.Weather.GetActivePreset and VisualFeatures.Weather.GetActivePreset() or nil
+    if not preset or not preset.fog then return nil end
+    local intensity = math.Clamp(tonumber(VisualFeatures.Weather.config.intensity) or 1, 0.2, 2)
+    return {
+        color = preset.fog.color,
+        start = math.max(0, preset.fog.start / math.max(0.65, intensity)),
+        finish = math.max(128, preset.fog.finish / math.max(0.72, intensity)),
+        density = math.Clamp(preset.fog.density * (0.72 + intensity * 0.28), 0.05, 1),
+    }
+end
+
+function VisualFeatures.Atmosphere.SetupFog(scale)
+    local fog = VisualFeatures.Atmosphere.GetFogConfig()
+    if not fog then return end
+
+    scale = math.max(tonumber(scale) or 1, 0.001)
+    local color = fog.color or Color(155, 175, 195)
+    render.FogMode(MATERIAL_FOG_LINEAR)
+    render.FogColor(color.r, color.g, color.b)
+    render.FogStart(fog.start * scale)
+    render.FogEnd(fog.finish * scale)
+    render.FogMaxDensity(fog.density)
+    return true
+end
+
+function VisualFeatures.Atmosphere.DrawPostProcess()
+    local cfg = VisualFeatures.Atmosphere.config
+    local weatherScreen = VisualFeatures.Weather.GetScreenAdjustment
+        and VisualFeatures.Weather.GetScreenAdjustment()
+        or nil
+    local flash = math.Clamp(tonumber(VisualFeatures.Weather.flash) or 0, 0, 1)
+    if not cfg.enabled and not cfg.nightMode and not weatherScreen and flash <= 0 then return end
+
+    local brightness = cfg.enabled and (tonumber(cfg.brightness) or 0) or 0
+    local contrast = cfg.enabled and (tonumber(cfg.contrast) or 1) or 1
+    local saturation = cfg.enabled and (tonumber(cfg.saturation) or 1) or 1
+    local addR, addG, addB = 0, 0, 0
+
+    if cfg.enabled then
+        local color = cfg.color or Color(255, 255, 255)
+        local strength = math.Clamp(tonumber(cfg.tintStrength) or 0.35, 0, 1)
+        addR = addR + ((color.r / 255) - 1) * 0.2 * strength
+        addG = addG + ((color.g / 255) - 1) * 0.2 * strength
+        addB = addB + ((color.b / 255) - 1) * 0.2 * strength
+    end
+
+    if cfg.nightMode then
+        brightness = brightness - 0.18
+        contrast = contrast * 1.08
+        saturation = saturation * 0.72
+        addR = addR - 0.035
+        addG = addG - 0.018
+        addB = addB + 0.006
+    end
+
+    if weatherScreen then
+        local weatherIntensity = math.Clamp(tonumber(VisualFeatures.Weather.config.intensity) or 1, 0.2, 2)
+        local tint = weatherScreen.tint or Color(255, 255, 255)
+        brightness = brightness + (weatherScreen.brightness or 0) * weatherIntensity
+        contrast = contrast * (1 + ((weatherScreen.contrast or 1) - 1) * weatherIntensity)
+        saturation = saturation * (1 + ((weatherScreen.saturation or 1) - 1) * weatherIntensity)
+        addR = addR + ((tint.r / 255) - 1) * 0.1 * weatherIntensity
+        addG = addG + ((tint.g / 255) - 1) * 0.1 * weatherIntensity
+        addB = addB + ((tint.b / 255) - 1) * 0.1 * weatherIntensity
+    end
+
+    brightness = brightness + flash * 0.42
+    contrast = contrast * (1 + flash * 0.16)
+    addR = addR + flash * 0.08
+    addG = addG + flash * 0.09
+    addB = addB + flash * 0.12
+
+    DrawColorModify({
+        ["$pp_colour_addr"] = math.Clamp(addR, -1, 1),
+        ["$pp_colour_addg"] = math.Clamp(addG, -1, 1),
+        ["$pp_colour_addb"] = math.Clamp(addB, -1, 1),
+        ["$pp_colour_brightness"] = math.Clamp(brightness, -1, 1),
+        ["$pp_colour_contrast"] = math.Clamp(contrast, 0.1, 3),
+        ["$pp_colour_colour"] = math.Clamp(saturation, 0, 3),
+        ["$pp_colour_mulr"] = 0,
+        ["$pp_colour_mulg"] = 0,
+        ["$pp_colour_mulb"] = 0,
+    })
+end
+
+-- ==================== 5.3 ЛОКАЛЬНАЯ ПОГОДА ====================
+function VisualFeatures.Weather.GetPreset()
+    return VisualFeatures.Weather.presets[VisualFeatures.Weather.config.weather]
+end
+
+function VisualFeatures.Weather.GetActivePreset()
+    if not VisualFeatures.Weather.config.enabled then return nil end
+    return VisualFeatures.Weather.GetPreset()
+end
+
+function VisualFeatures.Weather.GetScreenAdjustment()
+    local preset = VisualFeatures.Weather.GetActivePreset()
+    return preset and preset.screen or nil
+end
+
+function VisualFeatures.Weather.Save()
+    local cfg = VisualFeatures.Weather.config
+    local payload = {
+        version = 1,
+        enabled = cfg.enabled == true,
+        weather = VisualFeatures.Weather.presets[cfg.weather] and cfg.weather or "rain",
+        intensity = math.Clamp(tonumber(cfg.intensity) or 1, 0.2, 2),
+        radius = math.Clamp(tonumber(cfg.radius) or 900, 400, 1400),
+        wind = math.Clamp(tonumber(cfg.wind) or 1, 0, 2),
+        lightning = cfg.lightning ~= false,
+        indoorCheck = cfg.indoorCheck ~= false,
+    }
+    file.CreateDir(CLIENT_DATA_DIR)
+    file.Write(VisualFeatures.Weather.configPath, util.TableToJSON(payload, true) or "{}")
+end
+
+function VisualFeatures.Weather.QueueSave()
+    timer.Create(VisualFeatures.Weather.saveTimer, 0.25, 1, VisualFeatures.Weather.Save)
+end
+
+function VisualFeatures.Weather.Load()
+    local raw = file.Read(VisualFeatures.Weather.configPath, "DATA")
+    local data = raw and util.JSONToTable(raw) or nil
+    if not istable(data) then return false end
+
+    local cfg = VisualFeatures.Weather.config
+    cfg.enabled = data.enabled == true
+    if VisualFeatures.Weather.presets[data.weather] then cfg.weather = data.weather end
+    cfg.intensity = math.Clamp(tonumber(data.intensity) or 1, 0.2, 2)
+    cfg.radius = math.Clamp(tonumber(data.radius) or 900, 400, 1400)
+    cfg.wind = math.Clamp(tonumber(data.wind) or 1, 0, 2)
+    cfg.lightning = data.lightning ~= false
+    cfg.indoorCheck = data.indoorCheck ~= false
+    return true
+end
+
+function VisualFeatures.Weather.Clear()
+    VisualFeatures.Weather.particles = {}
+    VisualFeatures.Weather.flash = 0
+    VisualFeatures.Weather.thunderAt = nil
+    VisualFeatures.Weather.nextLightning = 0
+end
+
+function VisualFeatures.Weather.Reset()
+    VisualFeatures.Weather.config = {
+        enabled = false,
+        weather = "rain",
+        intensity = 1,
+        radius = 900,
+        wind = 1,
+        lightning = true,
+        indoorCheck = true,
+    }
+    VisualFeatures.Weather.Clear()
+    VisualFeatures.Weather.Save()
+end
+
+function VisualFeatures.Weather.SpawnParticle(preset, eyePosition)
+    local cfg = VisualFeatures.Weather.config
+    local radius = math.Clamp(tonumber(cfg.radius) or 900, 400, 1400)
+    local mode = preset.mode
+    local position
+    if mode == "sand" then
+        position = eyePosition + Vector(
+            math.Rand(-radius, radius * 0.45),
+            math.Rand(-radius, radius),
+            math.Rand(-radius * 0.3, radius * 0.55)
+        )
+    else
+        position = eyePosition + Vector(
+            math.Rand(-radius, radius),
+            math.Rand(-radius, radius),
+            math.Rand(100, radius * 0.85)
+        )
+    end
+    return {
+        pos = position,
+        phase = math.Rand(0, math.pi * 2),
+        age = 0,
+        life = math.Rand(2.2, 5.4),
+        size = math.Rand(4, 10),
+        velocity = Vector(0, 0, -100),
+    }
+end
+
+function VisualFeatures.Weather.CheckRoof(lp, now)
+    if not VisualFeatures.Weather.config.indoorCheck then
+        VisualFeatures.Weather.indoors = false
+        return
+    end
+    if now < VisualFeatures.Weather.nextRoofCheck then return end
+    VisualFeatures.Weather.nextRoofCheck = now + 0.45
+    local eyePosition = lp:EyePos()
+    local trace = util.TraceLine({
+        start = eyePosition,
+        endpos = eyePosition + Vector(0, 0, 16000),
+        filter = lp,
+        mask = MASK_SOLID_BRUSHONLY or MASK_SOLID,
+    })
+    VisualFeatures.Weather.indoors = trace.Hit == true and trace.HitSky ~= true
+end
+
+function VisualFeatures.Weather.Update()
+    local now = CurTime()
+    local dt = math.Clamp(now - (VisualFeatures.Weather.lastThink or now), 0, 0.05)
+    VisualFeatures.Weather.lastThink = now
+    VisualFeatures.Weather.flash = math.max(0, (VisualFeatures.Weather.flash or 0) - dt * 2.8)
+
+    local lp = LocalPlayer()
+    local preset = VisualFeatures.Weather.GetActivePreset()
+    if not IsValid(lp) or not preset then
+        if #VisualFeatures.Weather.particles > 0 then VisualFeatures.Weather.particles = {} end
+        VisualFeatures.Weather.thunderAt = nil
+        VisualFeatures.Weather.nextLightning = 0
+        return
+    end
+
+    VisualFeatures.Weather.CheckRoof(lp, now)
+    local blockedByRoof = VisualFeatures.Weather.config.indoorCheck and VisualFeatures.Weather.indoors
+    if blockedByRoof then
+        if #VisualFeatures.Weather.particles > 0 then VisualFeatures.Weather.particles = {} end
+    else
+        local cfg = VisualFeatures.Weather.config
+        local eyePosition = lp:EyePos()
+        local intensity = math.Clamp(tonumber(cfg.intensity) or 1, 0.2, 2)
+        local radius = math.Clamp(tonumber(cfg.radius) or 900, 400, 1400)
+        local targetCount = math.Clamp(math.floor(preset.amount * intensity), 12, 220)
+        while #VisualFeatures.Weather.particles < targetCount do
+            table.insert(VisualFeatures.Weather.particles, VisualFeatures.Weather.SpawnParticle(preset, eyePosition))
+        end
+        while #VisualFeatures.Weather.particles > targetCount do
+            table.remove(VisualFeatures.Weather.particles)
+        end
+
+        local wind = math.Clamp(tonumber(cfg.wind) or 1, 0, 2)
+        local mode = preset.mode
+        local maxDistanceSqr = (radius * 1.75) ^ 2
+        for index, particle in ipairs(VisualFeatures.Weather.particles) do
+            particle.age = particle.age + dt
+            if mode == "rain" then
+                local fallSpeed = cfg.weather == "storm" and -1250 or -920
+                particle.velocity = Vector(90 * wind, 28 * wind, fallSpeed)
+            elseif mode == "snow" then
+                particle.velocity = Vector(
+                    math.sin(now * 0.8 + particle.phase) * 42 * wind,
+                    math.cos(now * 0.65 + particle.phase) * 34 * wind,
+                    -78
+                )
+            elseif mode == "ash" then
+                particle.velocity = Vector(
+                    46 * wind + math.sin(now + particle.phase) * 24,
+                    18 * wind + math.cos(now * 0.7 + particle.phase) * 20,
+                    -28 + math.sin(now * 0.55 + particle.phase) * 13
+                )
+            else
+                particle.velocity = Vector(
+                    570 * math.max(0.2, wind),
+                    165 * math.max(0.2, wind),
+                    math.sin(now * 1.7 + particle.phase) * 24
+                )
+            end
+
+            particle.pos = particle.pos + particle.velocity * dt
+            local tooFar = particle.pos:DistToSqr(eyePosition) > maxDistanceSqr
+            local tooLow = mode ~= "sand" and particle.pos.z < eyePosition.z - radius * 0.72
+            if particle.age > particle.life or tooFar or tooLow then
+                VisualFeatures.Weather.particles[index] = VisualFeatures.Weather.SpawnParticle(preset, eyePosition)
+            end
+        end
+    end
+
+    local isStorm = VisualFeatures.Weather.config.weather == "storm"
+        and VisualFeatures.Weather.config.lightning
+        and not blockedByRoof
+    if isStorm then
+        if VisualFeatures.Weather.nextLightning <= 0 then
+            VisualFeatures.Weather.nextLightning = now + math.Rand(3.5, 7)
+        elseif now >= VisualFeatures.Weather.nextLightning then
+            VisualFeatures.Weather.flash = 1
+            VisualFeatures.Weather.thunderAt = now + math.Rand(0.16, 0.52)
+            VisualFeatures.Weather.nextLightning = now + math.Rand(5, 11)
+        end
+    else
+        VisualFeatures.Weather.nextLightning = 0
+        VisualFeatures.Weather.thunderAt = nil
+    end
+
+    if VisualFeatures.Weather.thunderAt and now >= VisualFeatures.Weather.thunderAt then
+        VisualFeatures.Weather.thunderAt = nil
+        local sounds = VisualFeatures.Weather.thunderSounds
+        surface.PlaySound(sounds[math.random(1, #sounds)])
+    end
+end
+
+function VisualFeatures.Weather.Draw()
+    local preset = VisualFeatures.Weather.GetActivePreset()
+    if not preset or (VisualFeatures.Weather.config.indoorCheck and VisualFeatures.Weather.indoors) then return end
+    if #VisualFeatures.Weather.particles == 0 then return end
+
+    local intensity = math.Clamp(tonumber(VisualFeatures.Weather.config.intensity) or 1, 0.2, 2)
+    local mode = preset.mode
+    local color = preset.color
+    if mode == "rain" then
+        render.SetMaterial(VisualFeatures.Weather.materials.streak)
+        local length = (VisualFeatures.Weather.config.weather == "storm" and 76 or 52) * intensity
+        local width = 0.9 + intensity * 0.85
+        for _, particle in ipairs(VisualFeatures.Weather.particles) do
+            local direction = particle.velocity:GetNormalized()
+            render.DrawBeam(
+                particle.pos,
+                particle.pos - direction * length,
+                width,
+                0,
+                1,
+                Color(color.r, color.g, color.b, math.Clamp(105 + intensity * 55, 0, 220))
+            )
+        end
+    elseif mode == "snow" then
+        render.SetMaterial(VisualFeatures.Weather.materials.glow)
+        for _, particle in ipairs(VisualFeatures.Weather.particles) do
+            local pulse = 0.82 + math.sin(CurTime() * 2 + particle.phase) * 0.18
+            local size = particle.size * pulse * (0.8 + intensity * 0.35)
+            render.DrawSprite(particle.pos, size, size, Color(color.r, color.g, color.b, 205))
+        end
+    elseif mode == "ash" then
+        render.SetMaterial(VisualFeatures.Weather.materials.smoke)
+        for _, particle in ipairs(VisualFeatures.Weather.particles) do
+            local progress = math.Clamp(particle.age / particle.life, 0, 1)
+            local size = particle.size * (1.1 + progress * 1.8) * intensity
+            render.DrawSprite(
+                particle.pos,
+                size,
+                size,
+                Color(color.r, color.g, color.b, math.floor(145 * (1 - progress * 0.45)))
+            )
+        end
+    else
+        render.SetMaterial(VisualFeatures.Weather.materials.streak)
+        for _, particle in ipairs(VisualFeatures.Weather.particles) do
+            local direction = particle.velocity:GetNormalized()
+            render.DrawBeam(
+                particle.pos,
+                particle.pos - direction * (26 + intensity * 18),
+                1.2 + intensity,
+                0,
+                1,
+                Color(color.r, color.g, color.b, math.Clamp(90 + intensity * 48, 0, 210))
+            )
+        end
+    end
+end
+
+-- ==================== 5.4 СЛЕД ЗА ИГРОКОМ ====================
+function VisualFeatures.PlayerTrail.Save()
+    local cfg = VisualFeatures.PlayerTrail.config
+    local payload = {
+        version = 1,
+        enabled = cfg.enabled == true,
+        style = VisualFeatures.PlayerTrail.styles[cfg.style] and cfg.style or "fire",
+        width = math.Clamp(tonumber(cfg.width) or 14, 4, 32),
+        lifetime = math.Clamp(tonumber(cfg.lifetime) or 1.4, 0.4, 4),
+        density = math.Clamp(tonumber(cfg.density) or 1, 0.5, 2),
+        intensity = math.Clamp(tonumber(cfg.intensity) or 1, 0.4, 2),
+        particles = cfg.particles ~= false,
+        glow = cfg.glow ~= false,
+        throughWalls = cfg.throughWalls == true,
+    }
+    file.CreateDir(CLIENT_DATA_DIR)
+    file.Write(VisualFeatures.PlayerTrail.configPath, util.TableToJSON(payload, true) or "{}")
+end
+
+function VisualFeatures.PlayerTrail.QueueSave()
+    timer.Create(VisualFeatures.PlayerTrail.saveTimer, 0.25, 1, VisualFeatures.PlayerTrail.Save)
+end
+
+function VisualFeatures.PlayerTrail.Load()
+    local raw = file.Read(VisualFeatures.PlayerTrail.configPath, "DATA")
+    local data = raw and util.JSONToTable(raw) or nil
+    if not istable(data) then return false end
+
+    local cfg = VisualFeatures.PlayerTrail.config
+    cfg.enabled = data.enabled == true
+    if VisualFeatures.PlayerTrail.styles[data.style] then cfg.style = data.style end
+    cfg.width = math.Clamp(tonumber(data.width) or 14, 4, 32)
+    cfg.lifetime = math.Clamp(tonumber(data.lifetime) or 1.4, 0.4, 4)
+    cfg.density = math.Clamp(tonumber(data.density) or 1, 0.5, 2)
+    cfg.intensity = math.Clamp(tonumber(data.intensity) or 1, 0.4, 2)
+    cfg.particles = data.particles ~= false
+    cfg.glow = data.glow ~= false
+    cfg.throughWalls = data.throughWalls == true
+    return true
+end
+
+function VisualFeatures.PlayerTrail.Clear()
+    VisualFeatures.PlayerTrail.points = {}
+    VisualFeatures.PlayerTrail.footprints = {}
+    VisualFeatures.PlayerTrail.lastSample = 0
+    VisualFeatures.PlayerTrail.lastPos = nil
+    VisualFeatures.PlayerTrail.lastFootPos = nil
+    VisualFeatures.PlayerTrail.sampleCounter = 0
+end
+
+function VisualFeatures.PlayerTrail.Reset()
+    VisualFeatures.PlayerTrail.config = {
+        enabled = false,
+        style = "fire",
+        width = 14,
+        lifetime = 1.4,
+        density = 1,
+        intensity = 1,
+        particles = true,
+        glow = true,
+        throughWalls = false,
+    }
+    VisualFeatures.PlayerTrail.Clear()
+    VisualFeatures.PlayerTrail.Save()
+end
+
+function VisualFeatures.PlayerTrail.AddFootprint(lp, now)
+    local velocity = lp:GetVelocity()
+    local planarSpeed = Vector(velocity.x, velocity.y, 0):Length()
+    if not lp:OnGround() or planarSpeed < 45 then return end
+
+    local origin = lp:GetPos()
+    if VisualFeatures.PlayerTrail.lastFootPos
+        and VisualFeatures.PlayerTrail.lastFootPos:DistToSqr(origin) < 784 then return end
+
+    VisualFeatures.PlayerTrail.footSide = -VisualFeatures.PlayerTrail.footSide
+    local sideOffset = lp:GetRight() * (VisualFeatures.PlayerTrail.footSide * 7)
+    local traceStart = origin + sideOffset + Vector(0, 0, 18)
+    local trace = util.TraceLine({
+        start = traceStart,
+        endpos = traceStart - Vector(0, 0, 72),
+        filter = lp,
+        mask = MASK_SOLID,
+    })
+    if not trace.Hit then return end
+
+    local forward = lp:GetForward()
+    forward.z = 0
+    if forward:LengthSqr() < 0.001 then forward = Vector(1, 0, 0) else forward:Normalize() end
+    table.insert(VisualFeatures.PlayerTrail.footprints, 1, {
+        pos = trace.HitPos + trace.HitNormal * 0.8,
+        normal = trace.HitNormal,
+        forward = forward,
+        time = now,
+        side = VisualFeatures.PlayerTrail.footSide,
+    })
+    VisualFeatures.PlayerTrail.lastFootPos = Vector(origin.x, origin.y, origin.z)
+    while #VisualFeatures.PlayerTrail.footprints > VisualFeatures.PlayerTrail.maxFootprints do
+        table.remove(VisualFeatures.PlayerTrail.footprints)
+    end
+end
+
+function VisualFeatures.PlayerTrail.AddPoint(lp, now)
+    local density = math.Clamp(tonumber(VisualFeatures.PlayerTrail.config.density) or 1, 0.5, 2)
+    if now - VisualFeatures.PlayerTrail.lastSample < 0.055 / density then return end
+
+    local position = lp:GetPos() + Vector(0, 0, 34)
+    if VisualFeatures.PlayerTrail.lastPos
+        and VisualFeatures.PlayerTrail.lastPos:DistToSqr(position) > 160000 then
+        VisualFeatures.PlayerTrail.Clear()
+    end
+    if VisualFeatures.PlayerTrail.lastPos
+        and VisualFeatures.PlayerTrail.lastPos:DistToSqr(position) < 9 then return end
+
+    VisualFeatures.PlayerTrail.sampleCounter = VisualFeatures.PlayerTrail.sampleCounter + 1
+    table.insert(VisualFeatures.PlayerTrail.points, 1, {
+        pos = Vector(position.x, position.y, position.z),
+        time = now,
+        right = lp:GetRight(),
+        up = Vector(0, 0, 1),
+        phase = VisualFeatures.PlayerTrail.sampleCounter * 0.79,
+    })
+    VisualFeatures.PlayerTrail.lastPos = Vector(position.x, position.y, position.z)
+    VisualFeatures.PlayerTrail.lastSample = now
+    while #VisualFeatures.PlayerTrail.points > VisualFeatures.PlayerTrail.maxPoints do
+        table.remove(VisualFeatures.PlayerTrail.points)
+    end
+end
+
+function VisualFeatures.PlayerTrail.Update()
+    local lp = LocalPlayer()
+    local cfg = VisualFeatures.PlayerTrail.config
+    if not IsValid(lp)
+        or not lp:Alive()
+        or not cfg.enabled
+        or not HasAccess(lp:SteamID(), "BODY_FX") then
+        if #VisualFeatures.PlayerTrail.points > 0 or #VisualFeatures.PlayerTrail.footprints > 0 then
+            VisualFeatures.PlayerTrail.Clear()
+        end
+        return
+    end
+
+    local now = CurTime()
+    if cfg.style == "footsteps" then
+        VisualFeatures.PlayerTrail.AddFootprint(lp, now)
+    else
+        VisualFeatures.PlayerTrail.AddPoint(lp, now)
+    end
+
+    local lifetime = math.Clamp(tonumber(cfg.lifetime) or 1.4, 0.4, 4)
+    while VisualFeatures.PlayerTrail.points[#VisualFeatures.PlayerTrail.points]
+        and now - VisualFeatures.PlayerTrail.points[#VisualFeatures.PlayerTrail.points].time > lifetime do
+        table.remove(VisualFeatures.PlayerTrail.points)
+    end
+    while VisualFeatures.PlayerTrail.footprints[#VisualFeatures.PlayerTrail.footprints]
+        and now - VisualFeatures.PlayerTrail.footprints[#VisualFeatures.PlayerTrail.footprints].time > lifetime do
+        table.remove(VisualFeatures.PlayerTrail.footprints)
+    end
+end
+
+function VisualFeatures.PlayerTrail.GetColor(styleKey, index, now)
+    if styleKey == "rainbow" then
+        return HSVToColor((now * 140 + index * 15) % 360, 1, 1)
+    elseif styleKey == "footsteps" then
+        return HSVToColor((now * 70 + index * 24) % 360, 0.75, 1)
+    end
+    local style = VisualFeatures.PlayerTrail.styles[styleKey] or {}
+    if istable(style.palette) and #style.palette > 0 then
+        local offset = math.floor(now * (style.paletteSpeed or 0))
+        return style.palette[(index + offset - 1) % #style.palette + 1]
+    end
+    return style.color or color_white
+end
+
+function VisualFeatures.PlayerTrail.GetRenderPosition(point, styleKey, now, index)
+    local lifetime = math.max(tonumber(VisualFeatures.PlayerTrail.config.lifetime) or 1.4, 0.01)
+    local age = math.Clamp(now - point.time, 0, lifetime)
+    local progress = math.Clamp(age / lifetime, 0, 1)
+    local position = point.pos
+    if styleKey == "fire" then
+        position = position
+            + point.up * (age * 34)
+            + point.right * (math.sin(now * 8 + point.phase) * 5 * progress)
+    elseif styleKey == "ice" then
+        position = position + point.right * (math.sin(point.phase) * 2.5 * progress)
+    elseif styleKey == "lightning" then
+        position = position
+            + point.right * (math.sin(now * 22 + point.phase) * 10 * progress)
+            + point.up * (math.cos(now * 17 + index) * 6 * progress)
+    elseif styleKey == "smoke" then
+        position = position
+            + point.up * (age * 28)
+            + point.right * (math.sin(now * 2 + point.phase) * 12 * progress)
+    end
+    return position, 1 - progress, progress
+end
+
+function VisualFeatures.PlayerTrail.Draw()
+    local lp = LocalPlayer()
+    local cfg = VisualFeatures.PlayerTrail.config
+    local style = VisualFeatures.PlayerTrail.styles[cfg.style]
+    if not IsValid(lp)
+        or not lp:Alive()
+        or not cfg.enabled
+        or not style
+        or not HasAccess(lp:SteamID(), "BODY_FX") then return end
+
+    local now = CurTime()
+    local width = math.Clamp(tonumber(cfg.width) or 14, 4, 32)
+    local intensity = math.Clamp(tonumber(cfg.intensity) or 1, 0.4, 2)
+    local widthScale = math.sqrt(intensity)
+    if cfg.throughWalls then cam.IgnoreZ(true) end
+
+    if cfg.style == "footsteps" then
+        render.SetMaterial(style.material)
+        local lifetime = math.max(tonumber(cfg.lifetime) or 1.4, 0.01)
+        for index, footprint in ipairs(VisualFeatures.PlayerTrail.footprints) do
+            local fade = 1 - math.Clamp((now - footprint.time) / lifetime, 0, 1)
+            local color = VisualFeatures.PlayerTrail.GetColor("footsteps", index, now)
+            local rotation = footprint.forward:Angle().y
+            render.DrawQuadEasy(
+                footprint.pos,
+                footprint.normal,
+                width * 0.72 * widthScale,
+                width * 1.55 * widthScale,
+                Color(color.r, color.g, color.b, math.Clamp(math.floor(220 * fade * intensity), 0, 255)),
+                rotation
+            )
+        end
+    elseif cfg.style == "smoke" then
+        render.SetMaterial(style.material)
+        for index, point in ipairs(VisualFeatures.PlayerTrail.points) do
+            if index % 2 == 1 then
+                local position, fade, progress = VisualFeatures.PlayerTrail.GetRenderPosition(point, "smoke", now, index)
+                local size = width * (0.75 + progress * 2.6) * widthScale
+                render.DrawSprite(
+                    position,
+                    size,
+                    size,
+                    Color(145, 150, 160, math.Clamp(math.floor(120 * fade * intensity), 0, 255))
+                )
+            end
+        end
+    else
+        render.SetMaterial(style.material)
+        for index = 1, #VisualFeatures.PlayerTrail.points - 1 do
+            local first = VisualFeatures.PlayerTrail.points[index]
+            local second = VisualFeatures.PlayerTrail.points[index + 1]
+            local posA, fadeA = VisualFeatures.PlayerTrail.GetRenderPosition(first, cfg.style, now, index)
+            local posB, fadeB = VisualFeatures.PlayerTrail.GetRenderPosition(second, cfg.style, now, index + 1)
+            local fade = math.min(fadeA, fadeB)
+            local color = VisualFeatures.PlayerTrail.GetColor(cfg.style, index, now)
+            render.DrawBeam(
+                posA,
+                posB,
+                width * (0.35 + fade * 0.65) * widthScale,
+                now * -1.5 + index * 0.05,
+                now * -1.5 + (index + 1) * 0.05,
+                Color(color.r, color.g, color.b, math.Clamp(math.floor(205 * fade * intensity), 0, 255))
+            )
+
+            if cfg.particles and cfg.style == "ice" and index % 5 == 0 then
+                local shardDirection = first.right * math.sin(first.phase) + first.up * 0.65
+                render.DrawBeam(
+                    posA,
+                    posA + shardDirection * width * 1.7,
+                    math.max(1, width * 0.18),
+                    0,
+                    1,
+                    Color(220, 250, 255, math.floor(180 * fade))
+                )
+            elseif cfg.particles and cfg.style == "lightning" and index % 4 == 0 then
+                local sparkDirection = first.right * math.sin(now * 20 + first.phase)
+                    + first.up * math.cos(now * 17 + first.phase)
+                render.DrawBeam(
+                    posA,
+                    posA + sparkDirection * width * 1.45,
+                    math.max(1, width * 0.13),
+                    0,
+                    1,
+                    Color(225, 245, 255, math.floor(195 * fade))
+                )
+            end
+        end
+
+        render.SetMaterial(VisualFeatures.PlayerTrail.coreMaterial)
+        for index = 1, #VisualFeatures.PlayerTrail.points - 1, 2 do
+            local posA, fadeA = VisualFeatures.PlayerTrail.GetRenderPosition(
+                VisualFeatures.PlayerTrail.points[index],
+                cfg.style,
+                now,
+                index
+            )
+            local posB, fadeB = VisualFeatures.PlayerTrail.GetRenderPosition(
+                VisualFeatures.PlayerTrail.points[index + 1],
+                cfg.style,
+                now,
+                index + 1
+            )
+            local fade = math.min(fadeA, fadeB)
+            local color = VisualFeatures.PlayerTrail.GetColor(cfg.style, index, now)
+            render.DrawBeam(
+                posA,
+                posB,
+                math.max(1, width * 0.22 * widthScale),
+                0,
+                1,
+                Color(
+                    math.floor((color.r + 255) * 0.5),
+                    math.floor((color.g + 255) * 0.5),
+                    math.floor((color.b + 255) * 0.5),
+                    math.Clamp(math.floor(230 * fade * intensity), 0, 255)
+                )
+            )
+        end
+
+        if cfg.particles and cfg.style == "fire" then
+            render.SetMaterial(VisualFeatures.PlayerTrail.glowMaterial)
+            for index = 2, #VisualFeatures.PlayerTrail.points, 5 do
+                local position, fade, progress = VisualFeatures.PlayerTrail.GetRenderPosition(
+                    VisualFeatures.PlayerTrail.points[index],
+                    "fire",
+                    now,
+                    index
+                )
+                local color = VisualFeatures.PlayerTrail.GetColor("fire", index + 1, now)
+                local size = width * (0.35 + progress * 0.65) * widthScale
+                render.DrawSprite(
+                    position + Vector(0, 0, width * progress),
+                    size,
+                    size,
+                    Color(color.r, color.g, color.b, math.floor(200 * fade))
+                )
+            end
+        end
+    end
+
+    if cfg.glow then
+        local sourcePosition
+        local sourceColor
+        if cfg.style == "footsteps" and VisualFeatures.PlayerTrail.footprints[1] then
+            sourcePosition = VisualFeatures.PlayerTrail.footprints[1].pos
+            sourceColor = VisualFeatures.PlayerTrail.GetColor("footsteps", 1, now)
+        elseif VisualFeatures.PlayerTrail.points[1] then
+            sourcePosition = VisualFeatures.PlayerTrail.points[1].pos
+            sourceColor = VisualFeatures.PlayerTrail.GetColor(cfg.style, 1, now)
+        end
+        if sourcePosition and sourceColor then
+            local light = DynamicLight(lp:EntIndex() * 64 + 29)
+            if light then
+                light.pos = sourcePosition
+                light.r = sourceColor.r
+                light.g = sourceColor.g
+                light.b = sourceColor.b
+                light.brightness = 1.1 * intensity
+                light.decay = 650
+                light.size = 95 + width * 4
+                light.dietime = now + 0.08
+            end
+        end
+    end
+
+    if cfg.throughWalls then cam.IgnoreZ(false) end
+end
+
+VisualFeatures.Atmosphere.Load()
+VisualFeatures.Weather.Load()
+VisualFeatures.PlayerTrail.Load()
+
+hook.Add("RenderScreenspaceEffects", VisualFeatures.Atmosphere.screenHook, VisualFeatures.Atmosphere.DrawPostProcess)
+hook.Add("SetupWorldFog", VisualFeatures.Atmosphere.worldFogHook, function()
+    return VisualFeatures.Atmosphere.SetupFog(1)
+end)
+hook.Add("SetupSkyboxFog", VisualFeatures.Atmosphere.skyFogHook, function(scale)
+    return VisualFeatures.Atmosphere.SetupFog(scale)
+end)
+hook.Add("Think", VisualFeatures.Weather.thinkHook, VisualFeatures.Weather.Update)
+hook.Add("PostDrawTranslucentRenderables", VisualFeatures.Weather.drawHook, function(_, drawingSkybox)
+    if drawingSkybox then return end
+    VisualFeatures.Weather.Draw()
+end)
+hook.Add("Think", VisualFeatures.PlayerTrail.thinkHook, VisualFeatures.PlayerTrail.Update)
+hook.Add("PostDrawTranslucentRenderables", VisualFeatures.PlayerTrail.drawHook, function(_, drawingSkybox)
+    if drawingSkybox then return end
+    VisualFeatures.PlayerTrail.Draw()
 end)
 
 local function IsWhitelistAdmin()
@@ -1806,20 +2810,27 @@ end
 
 -- ==================== 7. ВЫГРУЗКА ====================
 function MultiTool_UnloadSelf(reason)
-    SafeRemoveHook("Think", hook_Star)
-    SafeRemoveHook("HUDPaint", hook_ESP)
-    SafeRemoveHook("RenderScreenspaceEffects", hook_Shader)
-    SafeRemoveHook("Think", hook_Key)
-    SafeRemoveHook("Think", hook_RGB)
-    SafeRemoveHook("PlayerDeath", hook_Stats .. "_Death")
-    SafeRemoveHook("EntityTakeDamage", hook_Stats .. "_Damage")
-    SafeRemoveHook("Think", hook_Stats .. "_Movement")
-    SafeRemoveHook("DrawTranslucent", hook_Notes3D)
-    SafeRemoveHook("PostDrawTranslucentRenderables", hook_Notes3D)
-    SafeRemoveHook("HUDPaint", hook_Notes3D_HUD)
-    SafeRemoveHook("PostDrawTranslucentRenderables", hook_BodyFX)
+    SafeRemoveHook("Think", RuntimeHooks.Star)
+    SafeRemoveHook("HUDPaint", RuntimeHooks.ESP)
+    SafeRemoveHook("RenderScreenspaceEffects", RuntimeHooks.Shader)
+    SafeRemoveHook("Think", RuntimeHooks.Key)
+    SafeRemoveHook("Think", RuntimeHooks.RGB)
+    SafeRemoveHook("PlayerDeath", RuntimeHooks.Stats .. "_Death")
+    SafeRemoveHook("EntityTakeDamage", RuntimeHooks.Stats .. "_Damage")
+    SafeRemoveHook("Think", RuntimeHooks.Stats .. "_Movement")
+    SafeRemoveHook("DrawTranslucent", RuntimeHooks.Notes3D)
+    SafeRemoveHook("PostDrawTranslucentRenderables", RuntimeHooks.Notes3D)
+    SafeRemoveHook("HUDPaint", RuntimeHooks.Notes3DHUD)
+    SafeRemoveHook("PostDrawTranslucentRenderables", RuntimeHooks.BodyFX)
     SafeRemoveHook("PreDrawSkyBox", SkyboxFeature.preDrawHook)
     SafeRemoveHook("PostDraw2DSkyBox", SkyboxFeature.postDrawHook)
+    SafeRemoveHook("RenderScreenspaceEffects", VisualFeatures.Atmosphere.screenHook)
+    SafeRemoveHook("SetupWorldFog", VisualFeatures.Atmosphere.worldFogHook)
+    SafeRemoveHook("SetupSkyboxFog", VisualFeatures.Atmosphere.skyFogHook)
+    SafeRemoveHook("Think", VisualFeatures.Weather.thinkHook)
+    SafeRemoveHook("PostDrawTranslucentRenderables", VisualFeatures.Weather.drawHook)
+    SafeRemoveHook("Think", VisualFeatures.PlayerTrail.thinkHook)
+    SafeRemoveHook("PostDrawTranslucentRenderables", VisualFeatures.PlayerTrail.drawHook)
     SafeRemoveHook("OnScreenSizeChanged", "Unisono_StarFieldResize")
     SafeRemoveHook("PlayerBindPress", "Unisono_MenuBind")
     SafeRemoveHook("OnPauseMenuShow", MENU_ESCAPE_HOOK)
@@ -1837,14 +2848,22 @@ function MultiTool_UnloadSelf(reason)
         BODY_FX_SAVE_TIMER,
         CLIENT_COMMAND_POLL_TIMER,
         SkyboxFeature.saveTimer,
+        VisualFeatures.Atmosphere.saveTimer,
+        VisualFeatures.Weather.saveTimer,
+        VisualFeatures.PlayerTrail.saveTimer,
     }) do
         if timer.Exists(timerName) then timer.Remove(timerName) end
     end
     SaveWhitelistCache()
     SaveBodyFXConfig()
     SkyboxFeature.Save()
+    VisualFeatures.Atmosphere.Save()
+    VisualFeatures.Weather.Save()
+    VisualFeatures.PlayerTrail.Save()
     if SaveProcessedClientCommands then SaveProcessedClientCommands() end
     ClearBodyFXTrails()
+    VisualFeatures.Weather.Clear()
+    VisualFeatures.PlayerTrail.Clear()
     if IsWhitelistAdmin() then SaveAdminUsageLogs() end
     if IsValid(g_SpawnMenu) and g_SpawnMenu.OriginalPaint then g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
     if _G.UnisonoMultiToolUnload == MultiTool_UnloadSelf then
@@ -1858,7 +2877,7 @@ _G.UnisonoMultiToolUnload = MultiTool_UnloadSelf
 
 -- ==================== 8. ЗВЁЗДЫ ====================
 local lastStarUpdate = 0
-hook.Add("Think", hook_Star, function()
+hook.Add("Think", RuntimeHooks.Star, function()
     local ct = CurTime()
     local dt = ct - lastStarUpdate
     lastStarUpdate = ct
@@ -1871,7 +2890,7 @@ end)
 hook.Add("OnScreenSizeChanged", "Unisono_StarFieldResize", InitStarField)
 
 -- ==================== 9. ESP ====================
-hook.Add("HUDPaint", hook_ESP, function()
+hook.Add("HUDPaint", RuntimeHooks.ESP, function()
     if not ESP_Enabled then return end
     if not HasAccess(LocalPlayer():SteamID(), "ESP") then return end
     local lp = LocalPlayer()
@@ -1962,21 +2981,21 @@ local function ActivateShader(index)
 end
 
 ActivateShader(ActiveShaderIndex)
-hook.Add("RenderScreenspaceEffects", hook_Shader, function() if ActiveShader then ActiveShader(ActiveParams) end end)
+hook.Add("RenderScreenspaceEffects", RuntimeHooks.Shader, function() if ActiveShader then ActiveShader(ActiveParams) end end)
 
 -- ==================== 11. СТАТИСТИКА ====================
-hook.Add("PlayerDeath", hook_Stats .. "_Death", function(victim, inflictor, attacker)
+hook.Add("PlayerDeath", RuntimeHooks.Stats .. "_Death", function(victim, inflictor, attacker)
     if not HasAccess(LocalPlayer():SteamID(), "STATS") then return end
     if victim == LocalPlayer() then SessionStats.deaths = SessionStats.deaths + 1 end
     if attacker == LocalPlayer() and victim ~= LocalPlayer() then SessionStats.kills = SessionStats.kills + 1 end
 end)
-hook.Add("EntityTakeDamage", hook_Stats .. "_Damage", function(target, dmg)
+hook.Add("EntityTakeDamage", RuntimeHooks.Stats .. "_Damage", function(target, dmg)
     if not HasAccess(LocalPlayer():SteamID(), "STATS") then return end
     if target == LocalPlayer() then SessionStats.damageTaken = SessionStats.damageTaken + dmg:GetDamage() end
     local attacker = dmg:GetAttacker()
     if attacker == LocalPlayer() and target ~= LocalPlayer() then SessionStats.damageDealt = SessionStats.damageDealt + dmg:GetDamage() end
 end)
-hook.Add("Think", hook_Stats .. "_Movement", function()
+hook.Add("Think", RuntimeHooks.Stats .. "_Movement", function()
     if not HasAccess(LocalPlayer():SteamID(), "STATS") then return end
     local lp = LocalPlayer()
     if not IsValid(lp) then return end
@@ -1998,7 +3017,7 @@ local function GetNoteDrawPositions(note)
     return markerPos, labelPos
 end
 
-hook.Add("PostDrawTranslucentRenderables", hook_Notes3D, function(_, drawingSkybox)
+hook.Add("PostDrawTranslucentRenderables", RuntimeHooks.Notes3D, function(_, drawingSkybox)
     if drawingSkybox then return end
     local lp = LocalPlayer()
     if not IsValid(lp) or not HasAccess(lp:SteamID(), "NOTES") then return end
@@ -2061,7 +3080,7 @@ hook.Add("PostDrawTranslucentRenderables", hook_Notes3D, function(_, drawingSkyb
         end
     end
 end)
-hook.Add("HUDPaint", hook_Notes3D_HUD, function()
+hook.Add("HUDPaint", RuntimeHooks.Notes3DHUD, function()
     local lp = LocalPlayer()
     if not IsValid(lp) or not HasAccess(lp:SteamID(), "NOTES") then return end
     if #MapNotes == 0 then return end
@@ -2450,7 +3469,7 @@ local function DrawBodyFXTrail(state, lightIndex, now, style, renderStep, allowL
     end
 end
 
-hook.Add("PostDrawTranslucentRenderables", hook_BodyFX, function(_, drawingSkybox)
+hook.Add("PostDrawTranslucentRenderables", RuntimeHooks.BodyFX, function(_, drawingSkybox)
     if drawingSkybox then return end
     local lp = LocalPlayer()
     if not IsValid(lp)
@@ -2508,7 +3527,7 @@ function ApplyQMenuColor(color, isRainbow)
         else g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
     end
 end
-hook.Add("Think", hook_RGB, function()
+hook.Add("Think", RuntimeHooks.RGB, function()
     if Physgun_RainbowEnabled and IsValid(LocalPlayer()) then
         local wep = LocalPlayer():GetActiveWeapon()
         if IsValid(wep) and wep:GetClass() == "weapon_physgun" then wep:SetColor(HSVToColor((CurTime()*100)%360, 1, 1)) end
@@ -2822,27 +3841,364 @@ local function BuildShadersPanel()
     suppressInitialSelectionLog = false
 end
 
--- 15.2 ЛОКАЛЬНЫЙ SKYBOX
-local function BuildSkyboxPanel()
-    ClearContent()
+-- 15.2 МИР: ОСВЕЩЕНИЕ, ПОГОДА И SKYBOX
+local BuildWorldPanel = nil
+
+local function BuildLightingWorldPanel(parent)
+    ClearContent(parent)
+    local scroll = vgui.Create("DScrollPanel", parent)
+    scroll:Dock(FILL)
+    local t = GetTheme()
+    local cfg = VisualFeatures.Atmosphere.config
+
+    ULXLabel(scroll, 16, 14, "Редактор освещения и тумана")
+
+    local toggleButton
+    toggleButton = ULXButton(scroll, 16, 42, 238, 30, "", function()
+        cfg.enabled = not cfg.enabled
+        VisualFeatures.Atmosphere.Save()
+        LogFeatureUsage(
+            "lighting.toggle",
+            cfg.enabled and "Цветокоррекция включена" or "Цветокоррекция выключена",
+            "success"
+        )
+        Notify(cfg.enabled and "Редактор освещения включён" or "Редактор освещения выключен")
+    end)
+    toggleButton.Paint = function(self, w, h)
+        local theme = GetTheme()
+        local color = cfg.enabled and theme.status or (self:IsHovered() and theme.btnHover or theme.btn)
+        surface.SetDrawColor(color)
+        surface.DrawRect(0, 0, w, h)
+        draw.SimpleText(
+            "Освещение: " .. (cfg.enabled and "ВКЛ" or "ВЫКЛ"),
+            "Unisono_ULXBtn",
+            w / 2,
+            h / 2,
+            theme.btnText,
+            TEXT_ALIGN_CENTER,
+            TEXT_ALIGN_CENTER
+        )
+    end
+
+    ULXButton(scroll, 270, 42, 238, 30, "Сбросить освещение", function()
+        VisualFeatures.Atmosphere.Reset()
+        LogFeatureUsage("lighting.reset", "Освещение и пользовательский туман", "success")
+        Notify("Освещение сброшено")
+        timer.Simple(0, function()
+            if IsValid(mainFrame) and BuildWorldPanel then BuildWorldPanel("lighting") end
+        end)
+    end)
+
+    ULXLabel(scroll, 16, 86, "Цвет мира:")
+    local colorButton = ULXButton(scroll, 148, 80, 360, 28, "", function()
+        local dialog = vgui.Create("DFrame")
+        dialog:SetSize(310, 275)
+        dialog:Center()
+        dialog:SetTitle("Цвет мира")
+        dialog:MakePopup()
+
+        local mixer = vgui.Create("DColorMixer", dialog)
+        mixer:SetPos(10, 32)
+        mixer:SetSize(290, 190)
+        mixer:SetPalette(true)
+        mixer:SetAlphaBar(false)
+        mixer:SetWangs(true)
+        mixer:SetColor(cfg.color)
+
+        ULXButton(dialog, 105, 235, 100, 26, "Применить", function()
+            local selected = mixer:GetColor()
+            cfg.color = Color(selected.r, selected.g, selected.b)
+            cfg.enabled = true
+            VisualFeatures.Atmosphere.Save()
+            LogFeatureUsage(
+                "lighting.color",
+                string.format("RGB %d, %d, %d", selected.r, selected.g, selected.b),
+                "success"
+            )
+            dialog:Close()
+        end)
+    end)
+    colorButton.Paint = function(self, w, h)
+        local theme = GetTheme()
+        local color = cfg.color or Color(255, 255, 255)
+        surface.SetDrawColor(self:IsHovered() and theme.btnHover or theme.btn)
+        surface.DrawRect(0, 0, w, h)
+        surface.SetDrawColor(color.r, color.g, color.b, 255)
+        surface.DrawRect(6, 5, 36, h - 10)
+        draw.SimpleText(
+            string.format("RGB %d, %d, %d", color.r, color.g, color.b),
+            "Unisono_ULXBtn",
+            50,
+            h / 2,
+            theme.btnText,
+            TEXT_ALIGN_LEFT,
+            TEXT_ALIGN_CENTER
+        )
+    end
+
+    local function AddLightingSlider(y, title, key, minValue, maxValue, decimals)
+        local slider = vgui.Create("DNumSlider", scroll)
+        slider:SetPos(10, y)
+        slider:SetSize(510, 34)
+        slider:SetText(title)
+        slider:SetMin(minValue)
+        slider:SetMax(maxValue)
+        slider:SetDecimals(decimals)
+        slider:SetValue(cfg[key])
+        slider.Label:SetTextColor(t.text)
+        slider.OnValueChanged = function(_, value)
+            cfg[key] = math.Clamp(value, minValue, maxValue)
+            VisualFeatures.Atmosphere.QueueSave()
+        end
+    end
+
+    AddLightingSlider(118, "Сила цвета", "tintStrength", 0, 1, 2)
+    AddLightingSlider(154, "Яркость", "brightness", -0.5, 0.5, 2)
+    AddLightingSlider(190, "Контраст", "contrast", 0.5, 2, 2)
+    AddLightingSlider(226, "Насыщенность", "saturation", 0, 2, 2)
+
+    local nightCheck = vgui.Create("DCheckBoxLabel", scroll)
+    nightCheck:SetPos(16, 270)
+    nightCheck:SetText("Ночной режим — затемнить мир и добавить холодный оттенок")
+    nightCheck:SetTextColor(t.text)
+    nightCheck:SetChecked(cfg.nightMode)
+    nightCheck:SizeToContents()
+    nightCheck.OnChange = function(_, checked)
+        cfg.nightMode = checked == true
+        VisualFeatures.Atmosphere.Save()
+        LogFeatureUsage(
+            "lighting.night",
+            cfg.nightMode and "Ночной режим включён" or "Ночной режим выключен",
+            "success"
+        )
+    end
+
+    local fogCheck = vgui.Create("DCheckBoxLabel", scroll)
+    fogCheck:SetPos(16, 302)
+    fogCheck:SetText("Собственный локальный туман (имеет приоритет над погодой)")
+    fogCheck:SetTextColor(t.text)
+    fogCheck:SetChecked(cfg.fogEnabled)
+    fogCheck:SizeToContents()
+    fogCheck.OnChange = function(_, checked)
+        cfg.fogEnabled = checked == true
+        VisualFeatures.Atmosphere.Save()
+        LogFeatureUsage(
+            "lighting.fog",
+            cfg.fogEnabled and "Пользовательский туман включён" or "Пользовательский туман выключен",
+            "success"
+        )
+    end
+
+    ULXLabel(scroll, 16, 342, "Цвет тумана:")
+    local fogColorButton = ULXButton(scroll, 148, 336, 360, 28, "", function()
+        local dialog = vgui.Create("DFrame")
+        dialog:SetSize(310, 275)
+        dialog:Center()
+        dialog:SetTitle("Цвет тумана")
+        dialog:MakePopup()
+
+        local mixer = vgui.Create("DColorMixer", dialog)
+        mixer:SetPos(10, 32)
+        mixer:SetSize(290, 190)
+        mixer:SetPalette(true)
+        mixer:SetAlphaBar(false)
+        mixer:SetWangs(true)
+        mixer:SetColor(cfg.fogColor)
+
+        ULXButton(dialog, 105, 235, 100, 26, "Применить", function()
+            local selected = mixer:GetColor()
+            cfg.fogColor = Color(selected.r, selected.g, selected.b)
+            cfg.fogEnabled = true
+            VisualFeatures.Atmosphere.Save()
+            LogFeatureUsage(
+                "lighting.fog",
+                string.format("Цвет тумана RGB %d, %d, %d", selected.r, selected.g, selected.b),
+                "success"
+            )
+            dialog:Close()
+        end)
+    end)
+    fogColorButton.Paint = function(self, w, h)
+        local theme = GetTheme()
+        local color = cfg.fogColor or Color(155, 175, 195)
+        surface.SetDrawColor(self:IsHovered() and theme.btnHover or theme.btn)
+        surface.DrawRect(0, 0, w, h)
+        surface.SetDrawColor(color.r, color.g, color.b, 255)
+        surface.DrawRect(6, 5, 36, h - 10)
+        draw.SimpleText(
+            string.format("RGB %d, %d, %d", color.r, color.g, color.b),
+            "Unisono_ULXBtn",
+            50,
+            h / 2,
+            theme.btnText,
+            TEXT_ALIGN_LEFT,
+            TEXT_ALIGN_CENTER
+        )
+    end
+
+    AddLightingSlider(374, "Начало тумана", "fogStart", 0, 5000, 0)
+    AddLightingSlider(410, "Конец тумана", "fogEnd", 128, 12000, 0)
+    AddLightingSlider(446, "Плотность тумана", "fogDensity", 0.05, 1, 2)
+
+    local hint = vgui.Create("DLabel", scroll)
+    hint:SetPos(16, 492)
+    hint:SetSize(492, 42)
+    hint:SetWrap(true)
+    hint:SetText("Все изменения клиентские и сохраняются. Ночной режим, туман и цветокоррекция можно включать независимо.")
+    hint:SetTextColor(Color(165, 180, 205))
+    scroll:GetCanvas():SetTall(548)
+end
+
+local function BuildWeatherWorldPanel(parent)
+    ClearContent(parent)
+    local scroll = vgui.Create("DScrollPanel", parent)
+    scroll:Dock(FILL)
+    local t = GetTheme()
+    local cfg = VisualFeatures.Weather.config
+
+    ULXLabel(scroll, 16, 14, "Локальная погода вокруг игрока")
+
+    local toggleButton
+    toggleButton = ULXButton(scroll, 16, 42, 238, 30, "", function()
+        cfg.enabled = not cfg.enabled
+        VisualFeatures.Weather.Clear()
+        VisualFeatures.Weather.Save()
+        local preset = VisualFeatures.Weather.GetPreset()
+        LogFeatureUsage(
+            "weather.toggle",
+            (cfg.enabled and "Включена" or "Выключена")
+                .. " • " .. tostring(preset and preset.name or cfg.weather),
+            "success"
+        )
+        Notify(cfg.enabled and "Локальная погода включена" or "Локальная погода выключена")
+    end)
+    toggleButton.Paint = function(self, w, h)
+        local theme = GetTheme()
+        local color = cfg.enabled and theme.status or (self:IsHovered() and theme.btnHover or theme.btn)
+        surface.SetDrawColor(color)
+        surface.DrawRect(0, 0, w, h)
+        draw.SimpleText(
+            "Погода: " .. (cfg.enabled and "ВКЛ" or "ВЫКЛ"),
+            "Unisono_ULXBtn",
+            w / 2,
+            h / 2,
+            theme.btnText,
+            TEXT_ALIGN_CENTER,
+            TEXT_ALIGN_CENTER
+        )
+    end
+
+    ULXButton(scroll, 270, 42, 238, 30, "Очистить погоду", function()
+        VisualFeatures.Weather.Reset()
+        LogFeatureUsage("weather.reset", "Локальная погода", "success")
+        Notify("Погода отключена и сброшена")
+        timer.Simple(0, function()
+            if IsValid(mainFrame) and BuildWorldPanel then BuildWorldPanel("weather") end
+        end)
+    end)
+
+    ULXLabel(scroll, 16, 92, "Тип погоды:")
+    local combo = vgui.Create("DComboBox", scroll)
+    combo:SetPos(148, 86)
+    combo:SetSize(360, 28)
+    for _, key in ipairs(VisualFeatures.Weather.order) do
+        local preset = VisualFeatures.Weather.presets[key]
+        combo:AddChoice(preset.name, key, key == cfg.weather)
+    end
+    combo:SetValue((VisualFeatures.Weather.GetPreset() or {}).name or "Дождь")
+    combo.OnSelect = function(_, _, _, key)
+        if not VisualFeatures.Weather.presets[key] then return end
+        cfg.weather = key
+        VisualFeatures.Weather.Clear()
+        VisualFeatures.Weather.Save()
+        LogFeatureUsage("weather.type", VisualFeatures.Weather.presets[key].name, "success")
+    end
+
+    local function AddWeatherSlider(y, title, key, minValue, maxValue, decimals)
+        local slider = vgui.Create("DNumSlider", scroll)
+        slider:SetPos(10, y)
+        slider:SetSize(510, 36)
+        slider:SetText(title)
+        slider:SetMin(minValue)
+        slider:SetMax(maxValue)
+        slider:SetDecimals(decimals)
+        slider:SetValue(cfg[key])
+        slider.Label:SetTextColor(t.text)
+        slider.OnValueChanged = function(_, value)
+            if decimals == 0 then value = math.Round(value) end
+            cfg[key] = math.Clamp(value, minValue, maxValue)
+            VisualFeatures.Weather.QueueSave()
+        end
+    end
+
+    AddWeatherSlider(128, "Интенсивность", "intensity", 0.2, 2, 2)
+    AddWeatherSlider(168, "Радиус вокруг игрока", "radius", 400, 1400, 0)
+    AddWeatherSlider(208, "Сила ветра", "wind", 0, 2, 2)
+
+    local lightningCheck = vgui.Create("DCheckBoxLabel", scroll)
+    lightningCheck:SetPos(16, 256)
+    lightningCheck:SetText("Локальный гром и вспышки для пресета «Гроза»")
+    lightningCheck:SetTextColor(t.text)
+    lightningCheck:SetChecked(cfg.lightning)
+    lightningCheck:SizeToContents()
+    lightningCheck.OnChange = function(_, checked)
+        cfg.lightning = checked == true
+        VisualFeatures.Weather.Save()
+        LogFeatureUsage(
+            "weather.option",
+            cfg.lightning and "Гром и вспышки включены" or "Гром и вспышки выключены",
+            "success"
+        )
+    end
+
+    local roofCheck = vgui.Create("DCheckBoxLabel", scroll)
+    roofCheck:SetPos(16, 288)
+    roofCheck:SetText("Не рисовать осадки, когда над игроком есть крыша")
+    roofCheck:SetTextColor(t.text)
+    roofCheck:SetChecked(cfg.indoorCheck)
+    roofCheck:SizeToContents()
+    roofCheck.OnChange = function(_, checked)
+        cfg.indoorCheck = checked == true
+        VisualFeatures.Weather.nextRoofCheck = 0
+        VisualFeatures.Weather.Save()
+        LogFeatureUsage(
+            "weather.option",
+            cfg.indoorCheck and "Проверка крыши включена" or "Проверка крыши выключена",
+            "success"
+        )
+    end
+
+    local hint = vgui.Create("DLabel", scroll)
+    hint:SetPos(16, 334)
+    hint:SetSize(492, 58)
+    hint:SetWrap(true)
+    hint:SetText(
+        "Доступны дождь, снег, гроза, пепел и песчаная буря. "
+        .. "Погодный туман используется только пока пользовательский туман выключен."
+    )
+    hint:SetTextColor(Color(165, 180, 205))
+    scroll:GetCanvas():SetTall(408)
+end
+
+local function BuildSkyboxWorldPanel(parent)
+    ClearContent(parent)
+    local scroll = vgui.Create("DScrollPanel", parent)
+    scroll:Dock(FILL)
     local t = GetTheme()
 
-    ULXLabel(contentPanel, 20, 18, "Локальная смена скайбокса")
+    ULXLabel(scroll, 16, 14, "Локальная смена скайбокса")
 
-    local description = vgui.Create("DLabel", contentPanel)
-    description:SetPos(20, 44)
-    description:SetSize(536, 38)
+    local description = vgui.Create("DLabel", scroll)
+    description:SetPos(16, 38)
+    description:SetSize(492, 38)
     description:SetWrap(true)
-    description:SetText(
-        "Небо меняется только на этом клиенте. Сервер и остальные игроки "
-        .. "продолжают видеть skybox карты."
-    )
+    description:SetText("Небо меняется только на этом клиенте. Остальные игроки продолжают видеть skybox карты.")
     description:SetTextColor(t.text)
 
-    ULXLabel(contentPanel, 20, 92, "Готовый пресет:")
-    local combo = vgui.Create("DComboBox", contentPanel)
-    combo:SetPos(20, 116)
-    combo:SetSize(536, 28)
+    ULXLabel(scroll, 16, 86, "Готовый пресет:")
+    local combo = vgui.Create("DComboBox", scroll)
+    combo:SetPos(16, 108)
+    combo:SetSize(492, 28)
 
     local selectedSky = SkyboxFeature.config.sky
     for _, preset in ipairs(SkyboxFeature.presets) do
@@ -2853,10 +4209,10 @@ local function BuildSkyboxPanel()
         )
     end
 
-    ULXLabel(contentPanel, 20, 154, "Имя другого установленного skybox:")
-    local customEntry = vgui.Create("DTextEntry", contentPanel)
-    customEntry:SetPos(20, 178)
-    customEntry:SetSize(536, 26)
+    ULXLabel(scroll, 16, 146, "Имя другого установленного skybox:")
+    local customEntry = vgui.Create("DTextEntry", scroll)
+    customEntry:SetPos(16, 168)
+    customEntry:SetSize(492, 26)
     customEntry:SetText(SkyboxFeature.config.sky)
     customEntry:SetPlaceholderText("Например: sky_day01_01")
 
@@ -2865,9 +4221,9 @@ local function BuildSkyboxPanel()
         customEntry:SetText(selectedSky)
     end
 
-    local yawSlider = vgui.Create("DNumSlider", contentPanel)
-    yawSlider:SetPos(20, 214)
-    yawSlider:SetSize(536, 42)
+    local yawSlider = vgui.Create("DNumSlider", scroll)
+    yawSlider:SetPos(10, 204)
+    yawSlider:SetSize(510, 38)
     yawSlider:SetText("Поворот по горизонту")
     yawSlider:SetMin(0)
     yawSlider:SetMax(360)
@@ -2875,9 +4231,9 @@ local function BuildSkyboxPanel()
     yawSlider:SetValue(SkyboxFeature.config.yaw)
     yawSlider.Label:SetTextColor(t.text)
 
-    local brightnessSlider = vgui.Create("DNumSlider", contentPanel)
-    brightnessSlider:SetPos(20, 264)
-    brightnessSlider:SetSize(536, 42)
+    local brightnessSlider = vgui.Create("DNumSlider", scroll)
+    brightnessSlider:SetPos(10, 246)
+    brightnessSlider:SetSize(510, 38)
     brightnessSlider:SetText("Яркость")
     brightnessSlider:SetMin(0.2)
     brightnessSlider:SetMax(1)
@@ -2885,9 +4241,9 @@ local function BuildSkyboxPanel()
     brightnessSlider:SetValue(SkyboxFeature.config.brightness)
     brightnessSlider.Label:SetTextColor(t.text)
 
-    local status = vgui.Create("DLabel", contentPanel)
-    status:SetPos(20, 382)
-    status:SetSize(536, 42)
+    local status = vgui.Create("DLabel", scroll)
+    status:SetPos(16, 340)
+    status:SetSize(492, 42)
     status:SetWrap(true)
 
     local function SetStatus(message, isError)
@@ -2899,7 +4255,6 @@ local function BuildSkyboxPanel()
     local function ApplySelectedSky()
         local requestedSky = string.Trim(customEntry:GetValue())
         if requestedSky == "" then requestedSky = selectedSky end
-
         local ok, message = SkyboxFeature.Apply(
             requestedSky,
             yawSlider:GetValue(),
@@ -2923,27 +4278,26 @@ local function BuildSkyboxPanel()
         LogFeatureUsage(
             "skybox.apply",
             SkyboxFeature.GetDisplayName(selectedSky)
-            .. " • яркость " .. string.format("%.2f", SkyboxFeature.config.brightness),
+                .. " • яркость " .. string.format("%.2f", SkyboxFeature.config.brightness),
             "success"
         )
     end
 
-    ULXButton(contentPanel, 20, 326, 255, 32, "Применить локально", ApplySelectedSky)
-    ULXButton(contentPanel, 301, 326, 255, 32, "Вернуть небо карты", function()
+    ULXButton(scroll, 16, 296, 238, 30, "Применить локально", ApplySelectedSky)
+    ULXButton(scroll, 270, 296, 238, 30, "Вернуть небо карты", function()
         local oldSky = SkyboxFeature.config.sky
         SkyboxFeature.Disable()
         SetStatus("Используется стандартное небо текущей карты.", false)
         Notify("Стандартное небо карты восстановлено")
         LogFeatureUsage("skybox.restore", SkyboxFeature.GetDisplayName(oldSky), "success")
     end)
-
     customEntry.OnEnter = ApplySelectedSky
 
-    local hint = vgui.Create("DLabel", contentPanel)
-    hint:SetPos(20, 438)
-    hint:SetSize(536, 36)
+    local hint = vgui.Create("DLabel", scroll)
+    hint:SetPos(16, 394)
+    hint:SetSize(492, 42)
     hint:SetWrap(true)
-    hint:SetText("Пресеты используют уже установленные материалы GMod/Source; настройка сохраняется автоматически.")
+    hint:SetText("Пресеты используют установленные материалы GMod/Source; настройка сохраняется автоматически.")
     hint:SetTextColor(Color(170, 180, 195))
 
     if SkyboxFeature.config.enabled then
@@ -2956,6 +4310,75 @@ local function BuildSkyboxPanel()
     else
         SetStatus("Используется стандартное небо текущей карты.", false)
     end
+    scroll:GetCanvas():SetTall(452)
+end
+
+BuildWorldPanel = function(initialSection)
+    ClearContent()
+    local tabBar = vgui.Create("DPanel", contentPanel)
+    tabBar:SetPos(10, 10)
+    tabBar:SetSize(556, 30)
+    tabBar.Paint = function(_, w, h)
+        local t = GetTheme()
+        surface.SetDrawColor(t.panel)
+        surface.DrawRect(0, 0, w, h)
+    end
+
+    local worldContent = vgui.Create("DPanel", contentPanel)
+    worldContent:SetPos(10, 48)
+    worldContent:SetSize(556, 430)
+    worldContent.Paint = function(_, w, h)
+        local t = GetTheme()
+        surface.SetDrawColor(t.content)
+        surface.DrawRect(0, 0, w, h)
+        surface.SetDrawColor(t.border)
+        surface.DrawOutlinedRect(0, 0, w, h)
+    end
+
+    local activeSection = nil
+    local tabButtons = {}
+    local builders = {
+        lighting = BuildLightingWorldPanel,
+        weather = BuildWeatherWorldPanel,
+        skybox = BuildSkyboxWorldPanel,
+    }
+    local labels = {
+        lighting = "Освещение",
+        weather = "Погода",
+        skybox = "Скайбокс",
+    }
+    local order = {"lighting", "weather", "skybox"}
+
+    local function ShowSection(section)
+        section = builders[section] and section or "lighting"
+        activeSection = section
+        builders[section](worldContent)
+        for _, button in pairs(tabButtons) do
+            if IsValid(button) then button:InvalidateLayout(true) end
+        end
+    end
+
+    local x = 0
+    for _, key in ipairs(order) do
+        local sectionKey = key
+        local label = labels[sectionKey]
+        local button = ULXButton(tabBar, x, 0, 172, 30, label, function()
+            ShowSection(sectionKey)
+        end)
+        button.Paint = function(self, w, h)
+            local t = GetTheme()
+            local color = activeSection == sectionKey
+                and t.status
+                or (self:IsHovered() and t.btnHover or t.btn)
+            surface.SetDrawColor(color)
+            surface.DrawRect(0, 0, w, h)
+            draw.SimpleText(label, "Unisono_ULXBtn", w / 2, h / 2, t.btnText, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        end
+        tabButtons[sectionKey] = button
+        x = x + 178
+    end
+
+    ShowSection(initialSection or "lighting")
 end
 
 -- 15.3 ШРИФТЫ
@@ -3015,7 +4438,9 @@ local function BuildPhysgunPanel()
     end)
 end
 
--- 15.5 ЭФФЕКТЫ ТЕЛА
+-- 15.5 ЭФФЕКТЫ ТЕЛА И СЛЕД ИГРОКА
+local BuildPlayerTrailPanel
+
 local function BuildBodyFXPanel()
     ClearContent()
     local lp = LocalPlayer()
@@ -3026,7 +4451,17 @@ local function BuildBodyFXPanel()
 
     local scroll = vgui.Create("DScrollPanel", contentPanel)
     scroll:Dock(FILL)
-    ULXLabel(scroll, 20, 16, "Энергетический шлейф на костях персонажа")
+    ULXLabel(scroll, 20, 16, "Эффекты тела rawr >~<")
+    local bodyTab = ULXButton(scroll, 286, 10, 118, 28, "На теле", function() end)
+    bodyTab.Paint = function(_, w, h)
+        local theme = GetTheme()
+        surface.SetDrawColor(theme.status)
+        surface.DrawRect(0, 0, w, h)
+        draw.SimpleText("На теле", "Unisono_ULXBtn", w / 2, h / 2, theme.btnText, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
+    ULXButton(scroll, 414, 10, 138, 28, "След игрока", function()
+        BuildPlayerTrailPanel()
+    end)
 
     local toggleButton
     toggleButton = ULXButton(scroll, 20, 46, 220, 30, "", function()
@@ -3347,7 +4782,166 @@ local function BuildBodyFXPanel()
     scroll:GetCanvas():SetTall(672)
 end
 
--- 15.6 СКРИПТЫ
+-- 15.6 СЛЕД ЗА ИГРОКОМ
+BuildPlayerTrailPanel = function()
+    ClearContent()
+    local lp = LocalPlayer()
+    if not IsValid(lp) or not HasAccess(lp:SteamID(), "BODY_FX") then
+        ULXLabel(contentPanel, 20, 20, "Нет доступа к следу игрока (право BODY_FX).", Color(220, 70, 70))
+        return
+    end
+
+    local scroll = vgui.Create("DScrollPanel", contentPanel)
+    scroll:Dock(FILL)
+    local cfg = VisualFeatures.PlayerTrail.config
+    local t = GetTheme()
+    ULXLabel(scroll, 20, 16, "Эффекты тела rawr >~<")
+    ULXButton(scroll, 286, 10, 118, 28, "На теле", function()
+        BuildBodyFXPanel()
+    end)
+    local trailTab = ULXButton(scroll, 414, 10, 138, 28, "След игрока", function() end)
+    trailTab.Paint = function(_, w, h)
+        local theme = GetTheme()
+        surface.SetDrawColor(theme.status)
+        surface.DrawRect(0, 0, w, h)
+        draw.SimpleText("След игрока", "Unisono_ULXBtn", w / 2, h / 2, theme.btnText, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+    end
+
+    local toggleButton
+    toggleButton = ULXButton(scroll, 20, 46, 158, 30, "", function()
+        cfg.enabled = not cfg.enabled
+        VisualFeatures.PlayerTrail.Clear()
+        VisualFeatures.PlayerTrail.Save()
+        local style = VisualFeatures.PlayerTrail.styles[cfg.style]
+        LogFeatureUsage(
+            "trail.toggle",
+            (cfg.enabled and "Включён" or "Выключен")
+                .. " • " .. tostring(style and style.name or cfg.style),
+            "success"
+        )
+        Notify(cfg.enabled and "След игрока включён" or "След игрока выключен")
+    end)
+    toggleButton.Paint = function(self, w, h)
+        local theme = GetTheme()
+        local color = cfg.enabled and theme.status or (self:IsHovered() and theme.btnHover or theme.btn)
+        surface.SetDrawColor(color)
+        surface.DrawRect(0, 0, w, h)
+        draw.SimpleText(
+            "След: " .. (cfg.enabled and "ВКЛ" or "ВЫКЛ"),
+            "Unisono_ULXBtn",
+            w / 2,
+            h / 2,
+            theme.btnText,
+            TEXT_ALIGN_CENTER,
+            TEXT_ALIGN_CENTER
+        )
+    end
+
+    ULXButton(scroll, 190, 46, 158, 30, "Очистить след", function()
+        VisualFeatures.PlayerTrail.Clear()
+        LogFeatureUsage("trail.clear", "История следа очищена", "success")
+        Notify("След очищен")
+    end)
+    ULXButton(scroll, 360, 46, 158, 30, "Сбросить", function()
+        VisualFeatures.PlayerTrail.Reset()
+        LogFeatureUsage("trail.reset", "Настройки следа", "success")
+        Notify("След игрока сброшен")
+        timer.Simple(0, function()
+            if IsValid(mainFrame) then BuildPlayerTrailPanel() end
+        end)
+    end)
+
+    ULXLabel(scroll, 20, 96, "Стиль:")
+    local combo = vgui.Create("DComboBox", scroll)
+    combo:SetPos(150, 90)
+    combo:SetSize(368, 28)
+    for _, key in ipairs(VisualFeatures.PlayerTrail.order) do
+        local style = VisualFeatures.PlayerTrail.styles[key]
+        combo:AddChoice(style.name, key, key == cfg.style)
+    end
+    combo:SetValue((VisualFeatures.PlayerTrail.styles[cfg.style] or {}).name or "Огонь")
+    combo.OnSelect = function(_, _, _, key)
+        if not VisualFeatures.PlayerTrail.styles[key] then return end
+        cfg.style = key
+        VisualFeatures.PlayerTrail.Clear()
+        VisualFeatures.PlayerTrail.Save()
+        LogFeatureUsage("trail.style", VisualFeatures.PlayerTrail.styles[key].name, "success")
+    end
+
+    local function AddTrailSlider(y, title, key, minValue, maxValue, decimals)
+        local slider = vgui.Create("DNumSlider", scroll)
+        slider:SetPos(14, y)
+        slider:SetSize(510, 36)
+        slider:SetText(title)
+        slider:SetMin(minValue)
+        slider:SetMax(maxValue)
+        slider:SetDecimals(decimals)
+        slider:SetValue(cfg[key])
+        slider.Label:SetTextColor(t.text)
+        slider.OnValueChanged = function(_, value)
+            cfg[key] = math.Clamp(value, minValue, maxValue)
+            VisualFeatures.PlayerTrail.QueueSave()
+        end
+    end
+
+    AddTrailSlider(132, "Толщина", "width", 4, 32, 1)
+    AddTrailSlider(172, "Время затухания", "lifetime", 0.4, 4, 2)
+    AddTrailSlider(212, "Плотность точек", "density", 0.5, 2, 2)
+    AddTrailSlider(252, "Интенсивность", "intensity", 0.4, 2, 2)
+
+    local function AddTrailCheck(y, text, key, enabledText, disabledText)
+        local check = vgui.Create("DCheckBoxLabel", scroll)
+        check:SetPos(20, y)
+        check:SetText(text)
+        check:SetTextColor(t.text)
+        check:SetChecked(cfg[key])
+        check:SizeToContents()
+        check.OnChange = function(_, checked)
+            cfg[key] = checked == true
+            VisualFeatures.PlayerTrail.Save()
+            LogFeatureUsage(
+                "trail.option",
+                checked and enabledText or disabledText,
+                "success"
+            )
+        end
+    end
+
+    AddTrailCheck(
+        302,
+        "Дополнительные искры, осколки и огненные частицы",
+        "particles",
+        "Дополнительные частицы включены",
+        "Дополнительные частицы выключены"
+    )
+    AddTrailCheck(
+        332,
+        "Локально освещать пространство у начала следа",
+        "glow",
+        "Свечение следа включено",
+        "Свечение следа выключено"
+    )
+    AddTrailCheck(
+        362,
+        "Показывать след сквозь стены",
+        "throughWalls",
+        "След виден сквозь стены",
+        "След учитывает глубину"
+    )
+
+    local hint = vgui.Create("DLabel", scroll)
+    hint:SetPos(20, 406)
+    hint:SetSize(500, 48)
+    hint:SetWrap(true)
+    hint:SetText(
+        "Огонь, лёд, молнии, радуга и дым повторяют путь игрока. "
+        .. "Светящиеся шаги ставятся попеременно на землю."
+    )
+    hint:SetTextColor(Color(165, 180, 205))
+    scroll:GetCanvas():SetTall(470)
+end
+
+-- 15.7 СКРИПТЫ
 local function BuildScriptsPanel(parent)
     local panel = parent or contentPanel
     ClearContent(panel)
@@ -4197,13 +5791,21 @@ local function BuildOopsPanel()
         ClearBodyFXTrails()
         SaveBodyFXConfig()
         SkyboxFeature.Reset()
+        VisualFeatures.Atmosphere.Reset()
+        VisualFeatures.Weather.Reset()
+        VisualFeatures.PlayerTrail.Reset()
         MapNotes = {}; MapNotes_NextID = 1
         SessionStats = { sessionStart=CurTime(), kills=0, deaths=0, damageTaken=0, damageDealt=0, distanceTraveled=0, jumps=0, lastPos=Vector(0,0,0), onGround=true }
         if IsValid(g_SpawnMenu) and g_SpawnMenu.OriginalPaint then g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
     end)
     AddReset("Только ESP", "esp.reset", function() ESP_Enabled = false; ESP_MaxDistance = 1100 end)
     AddReset("Только шейдеры", "shader.reset", function() ShaderStates = {}; ActiveShaderIndex = 1; ActivateShader(1) end)
-    AddReset("Только скайбокс", "skybox.reset", SkyboxFeature.Reset)
+    AddReset("Только мир", "world.reset", function()
+        SkyboxFeature.Reset()
+        VisualFeatures.Atmosphere.Reset()
+        VisualFeatures.Weather.Reset()
+    end)
+    AddReset("Только след игрока", "trail.reset", VisualFeatures.PlayerTrail.Reset)
     AddReset("Только эффекты тела", "bodyfx.reset", function()
         BodyFXConfig.enabled = false
         BodyFXConfig.preset = "right_hand"
@@ -4687,10 +6289,10 @@ function ToggleMenu()
     local categories = {
         {"!Не работает!",  BuildESPPanel},
         {"Шейдеры",        BuildShadersPanel},
-        {"Скайбокс",        BuildSkyboxPanel},
+        {"Мир",             BuildWorldPanel},
         {"Настройки шрифта", BuildFontPanel},
         {"Физган",         BuildPhysgunPanel},
-        {"Эффекты тела",   BuildBodyFXPanel},
+        {"Эффекты тела rawr >~<", BuildBodyFXPanel},
         {"Локальная консоль", BuildConsolePanel},
         {"Q Меню (Цвет)",  BuildQMenuPanel},
         {"Чат",            BuildChatPanel},
@@ -4721,7 +6323,7 @@ function ToggleMenu()
     for _, cat in ipairs(categories) do
         local name, builder = cat[1], cat[2]
         local btn = vgui.Create("DButton", leftPanel)
-        btn:SetPos(6, y) btn:SetSize(168, 28) btn:SetText("")
+        btn:SetPos(6, y) btn:SetSize(168, 25) btn:SetText("")
         btn.Paint = function(self, w2, h2)
             local t = GetTheme()
             local col = self:IsHovered() and t.btnHover or t.btn
@@ -4732,7 +6334,7 @@ function ToggleMenu()
             surface.PlaySound("buttons/button9.wav")
             builder()
         end
-        y = y + 32
+        y = y + 29
     end
 
     local statusBar = vgui.Create("DPanel", mainFrame)
