@@ -1,13 +1,13 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.7.8 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.7.9 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist синхронизируется через
 --  GitHub Gist. Служебные данные никогда не отправляются в игровой чат.
 -- Ну ка
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.7.8"
+local SCRIPT_VERSION = "v1.7.9"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -248,6 +248,8 @@ VisualFeatures.Killfeed = {
         enabled = true,
         duration = 7,
         maxEntries = 6,
+        backgroundColor = Color(12, 15, 21, 220),
+        textColor = Color(235, 240, 250, 255),
     },
     entries = {},
     recentVictims = {},
@@ -530,6 +532,8 @@ local SessionStats = {
     sessionStart = CurTime(), kills = 0, deaths = 0,
     damageTaken = 0, damageDealt = 0, distanceTraveled = 0,
     jumps = 0, lastPos = Vector(0,0,0), onGround = true,
+    playerState = {},
+    recentDeaths = {},
 }
 local MapNotes = {}
 local MapNotes_NextID = 1
@@ -1796,11 +1800,25 @@ end
 -- ==================== 5.5 КЛИЕНТСКИЙ КИЛЛФИД ====================
 function VisualFeatures.Killfeed.Save()
     local cfg = VisualFeatures.Killfeed.config
+    local backgroundColor = IsColor(cfg.backgroundColor) and cfg.backgroundColor or Color(12, 15, 21, 220)
+    local textColor = IsColor(cfg.textColor) and cfg.textColor or Color(235, 240, 250, 255)
     local payload = {
-        version = 1,
+        version = 2,
         enabled = cfg.enabled == true,
         duration = math.Clamp(tonumber(cfg.duration) or 7, 3, 15),
         maxEntries = math.Clamp(math.Round(tonumber(cfg.maxEntries) or 6), 3, 10),
+        backgroundColor = {
+            r = math.Clamp(math.Round(tonumber(backgroundColor.r) or 12), 0, 255),
+            g = math.Clamp(math.Round(tonumber(backgroundColor.g) or 15), 0, 255),
+            b = math.Clamp(math.Round(tonumber(backgroundColor.b) or 21), 0, 255),
+            a = math.Clamp(math.Round(tonumber(backgroundColor.a) or 220), 0, 255),
+        },
+        textColor = {
+            r = math.Clamp(math.Round(tonumber(textColor.r) or 235), 0, 255),
+            g = math.Clamp(math.Round(tonumber(textColor.g) or 240), 0, 255),
+            b = math.Clamp(math.Round(tonumber(textColor.b) or 250), 0, 255),
+            a = 255,
+        },
     }
     file.CreateDir(CLIENT_DATA_DIR)
     file.Write(VisualFeatures.Killfeed.configPath, util.TableToJSON(payload, true) or "{}")
@@ -1819,6 +1837,22 @@ function VisualFeatures.Killfeed.Load()
     cfg.enabled = data.enabled ~= false
     cfg.duration = math.Clamp(tonumber(data.duration) or 7, 3, 15)
     cfg.maxEntries = math.Clamp(math.Round(tonumber(data.maxEntries) or 6), 3, 10)
+    if istable(data.backgroundColor) then
+        cfg.backgroundColor = Color(
+            math.Clamp(math.Round(tonumber(data.backgroundColor.r) or 12), 0, 255),
+            math.Clamp(math.Round(tonumber(data.backgroundColor.g) or 15), 0, 255),
+            math.Clamp(math.Round(tonumber(data.backgroundColor.b) or 21), 0, 255),
+            math.Clamp(math.Round(tonumber(data.backgroundColor.a) or 220), 0, 255)
+        )
+    end
+    if istable(data.textColor) then
+        cfg.textColor = Color(
+            math.Clamp(math.Round(tonumber(data.textColor.r) or 235), 0, 255),
+            math.Clamp(math.Round(tonumber(data.textColor.g) or 240), 0, 255),
+            math.Clamp(math.Round(tonumber(data.textColor.b) or 250), 0, 255),
+            255
+        )
+    end
     return true
 end
 
@@ -1832,6 +1866,8 @@ function VisualFeatures.Killfeed.Reset()
         enabled = true,
         duration = 7,
         maxEntries = 6,
+        backgroundColor = Color(12, 15, 21, 220),
+        textColor = Color(235, 240, 250, 255),
     }
     VisualFeatures.Killfeed.Clear()
     VisualFeatures.Killfeed.Save()
@@ -1952,6 +1988,8 @@ function VisualFeatures.Killfeed.Draw()
     local rowHeight = 36
     local rowGap = 6
     local arrowText = "  --->  "
+    local backgroundColor = IsColor(cfg.backgroundColor) and cfg.backgroundColor or Color(12, 15, 21, 220)
+    local textColor = IsColor(cfg.textColor) and cfg.textColor or Color(235, 240, 250, 255)
     surface.SetFont("Unisono_Killfeed")
     local arrowWidth = surface.GetTextSize(arrowText)
 
@@ -1968,10 +2006,23 @@ function VisualFeatures.Killfeed.Draw()
         local x = math.floor(right - rowWidth + slide)
         local y = startY + (index - 1) * (rowHeight + rowGap)
         local alpha = math.floor(255 * opacity)
+        local textAlpha = math.floor((tonumber(textColor.a) or 255) * opacity)
         local attackerColor = entry.attackerColor or Color(205, 210, 220)
         local victimColor = entry.victimColor or Color(225, 225, 225)
 
-        draw.RoundedBox(7, x, y, rowWidth, rowHeight, Color(12, 15, 21, math.floor(220 * opacity)))
+        draw.RoundedBox(
+            7,
+            x,
+            y,
+            rowWidth,
+            rowHeight,
+            Color(
+                backgroundColor.r,
+                backgroundColor.g,
+                backgroundColor.b,
+                math.floor((tonumber(backgroundColor.a) or 220) * opacity)
+            )
+        )
         surface.SetDrawColor(75, 85, 105, math.floor(155 * opacity))
         surface.DrawOutlinedRect(x, y, rowWidth, rowHeight)
         surface.SetDrawColor(attackerColor.r, attackerColor.g, attackerColor.b, alpha)
@@ -1987,7 +2038,7 @@ function VisualFeatures.Killfeed.Draw()
             "Unisono_Killfeed",
             textX,
             textY,
-            Color(attackerColor.r, attackerColor.g, attackerColor.b, alpha),
+            Color(textColor.r, textColor.g, textColor.b, textAlpha),
             TEXT_ALIGN_LEFT,
             TEXT_ALIGN_CENTER
         )
@@ -1997,7 +2048,7 @@ function VisualFeatures.Killfeed.Draw()
             "Unisono_Killfeed",
             textX,
             textY,
-            Color(245, 115, 90, alpha),
+            Color(textColor.r, textColor.g, textColor.b, textAlpha),
             TEXT_ALIGN_LEFT,
             TEXT_ALIGN_CENTER
         )
@@ -2007,7 +2058,7 @@ function VisualFeatures.Killfeed.Draw()
             "Unisono_Killfeed",
             textX,
             textY,
-            Color(victimColor.r, victimColor.g, victimColor.b, alpha),
+            Color(textColor.r, textColor.g, textColor.b, textAlpha),
             TEXT_ALIGN_LEFT,
             TEXT_ALIGN_CENTER
         )
@@ -2037,8 +2088,10 @@ hook.Add("PostDrawTranslucentRenderables", VisualFeatures.PlayerTrail.drawHook, 
     if drawingSkybox then return end
     VisualFeatures.PlayerTrail.Draw()
 end)
+-- Shared by the killfeed and client-side session statistics.
 gameevent.Listen("entity_killed")
 gameevent.Listen("player_hurt")
+gameevent.Listen("player_spawn")
 hook.Add("entity_killed", VisualFeatures.Killfeed.eventHook, VisualFeatures.Killfeed.HandleEntityKilled)
 hook.Add("player_hurt", VisualFeatures.Killfeed.hurtHook, VisualFeatures.Killfeed.HandlePlayerHurt)
 hook.Add("HUDPaint", VisualFeatures.Killfeed.hudHook, VisualFeatures.Killfeed.Draw)
@@ -3011,8 +3064,9 @@ function MultiTool_UnloadSelf(reason)
     SafeRemoveHook("RenderScreenspaceEffects", RuntimeHooks.Shader)
     SafeRemoveHook("Think", RuntimeHooks.Key)
     SafeRemoveHook("Think", RuntimeHooks.RGB)
-    SafeRemoveHook("PlayerDeath", RuntimeHooks.Stats .. "_Death")
-    SafeRemoveHook("EntityTakeDamage", RuntimeHooks.Stats .. "_Damage")
+    SafeRemoveHook("entity_killed", RuntimeHooks.Stats .. "_Death")
+    SafeRemoveHook("player_hurt", RuntimeHooks.Stats .. "_Damage")
+    SafeRemoveHook("player_spawn", RuntimeHooks.Stats .. "_Spawn")
     SafeRemoveHook("Think", RuntimeHooks.Stats .. "_Movement")
     SafeRemoveHook("DrawTranslucent", RuntimeHooks.Notes3D)
     SafeRemoveHook("PostDrawTranslucentRenderables", RuntimeHooks.Notes3D)
@@ -3186,21 +3240,242 @@ ActivateShader(ActiveShaderIndex)
 hook.Add("RenderScreenspaceEffects", RuntimeHooks.Shader, function() if ActiveShader then ActiveShader(ActiveParams) end end)
 
 -- ==================== 11. СТАТИСТИКА ====================
-hook.Add("PlayerDeath", RuntimeHooks.Stats .. "_Death", function(victim, inflictor, attacker)
-    if not HasAccess(LocalPlayer():SteamID(), "STATS") then return end
-    if victim == LocalPlayer() then SessionStats.deaths = SessionStats.deaths + 1 end
-    if attacker == LocalPlayer() and victim ~= LocalPlayer() then SessionStats.kills = SessionStats.kills + 1 end
-end)
-hook.Add("EntityTakeDamage", RuntimeHooks.Stats .. "_Damage", function(target, dmg)
-    if not HasAccess(LocalPlayer():SteamID(), "STATS") then return end
-    if target == LocalPlayer() then SessionStats.damageTaken = SessionStats.damageTaken + dmg:GetDamage() end
-    local attacker = dmg:GetAttacker()
-    if attacker == LocalPlayer() and target ~= LocalPlayer() then SessionStats.damageDealt = SessionStats.damageDealt + dmg:GetDamage() end
-end)
-hook.Add("Think", RuntimeHooks.Stats .. "_Movement", function()
-    if not HasAccess(LocalPlayer():SteamID(), "STATS") then return end
+function SessionStats.RefreshPlayerState()
+    for _, ply in ipairs(player.GetAll()) do
+        if not IsValid(ply) or not ply:IsPlayer() then continue end
+        local userID = ply:UserID()
+        if not userID or userID <= 0 then continue end
+
+        local observedHealth = math.max(tonumber(ply:Health()) or 0, 0)
+        local isAlive = ply:Alive()
+        local cached = SessionStats.playerState[userID]
+        local identityChanged = not cached or cached.entity ~= ply
+        if cached and cached.alive == false and not isAlive then
+            cached.sawDeadState = true
+        end
+        local respawned = cached
+            and isAlive
+            and observedHealth > 0
+            and (
+                cached.spawnPending
+                or (
+                    cached.alive == false
+                    and cached.sawDeadState
+                )
+                or (cached.deathAt and RealTime() - cached.deathAt > 1)
+            )
+
+        if identityChanged or respawned then
+            cached = {
+                entity = ply,
+                health = observedHealth,
+                alive = isAlive,
+                sawDeadState = not isAlive,
+                deathRecorded = false,
+            }
+            SessionStats.playerState[userID] = cached
+        else
+            -- Networked Health can trail player_hurt by a frame. Keep the event
+            -- value authoritative until the entity reaches it, otherwise the
+            -- next hit can count the previous damage a second time.
+            if cached.pendingHealth ~= nil then
+                if observedHealth <= cached.pendingHealth then
+                    cached.pendingHealth = nil
+                    cached.pendingHealthAt = nil
+                elseif RealTime() - (cached.pendingHealthAt or 0) > 1 then
+                    cached.pendingHealth = nil
+                    cached.pendingHealthAt = nil
+                    cached.health = math.max(tonumber(cached.health) or observedHealth, observedHealth)
+                end
+            else
+                -- Only increases are safe here: decreases belong to player_hurt.
+                cached.health = math.max(tonumber(cached.health) or observedHealth, observedHealth)
+            end
+            -- A fatal event can arrive one frame before Player:Alive updates.
+            -- Preserve that authoritative dead state until the client observes it.
+            if cached.alive ~= false or not isAlive then
+                cached.alive = isAlive
+            end
+        end
+
+        cached.updatedAt = RealTime()
+    end
+end
+
+function SessionStats.Reset()
     local lp = LocalPlayer()
-    if not IsValid(lp) then return end
+    SessionStats.sessionStart = CurTime()
+    SessionStats.kills = 0
+    SessionStats.deaths = 0
+    SessionStats.damageTaken = 0
+    SessionStats.damageDealt = 0
+    SessionStats.distanceTraveled = 0
+    SessionStats.jumps = 0
+    SessionStats.lastPos = IsValid(lp) and lp:GetPos() or Vector(0, 0, 0)
+    SessionStats.onGround = IsValid(lp) and lp:OnGround() or true
+    SessionStats.playerState = {}
+    SessionStats.recentDeaths = {}
+    SessionStats.RefreshPlayerState()
+end
+
+function SessionStats.RecordDeath(victim, attacker)
+    if not IsValid(victim) or not victim:IsPlayer() then return false end
+
+    local victimUserID = victim:UserID()
+    local dedupKey = victimUserID and victimUserID > 0 and victimUserID or ("ent:" .. victim:EntIndex())
+    local now = RealTime()
+    local lastSeen = SessionStats.recentDeaths[dedupKey]
+    if lastSeen and now - lastSeen < 0.5 then return false end
+
+    local cached = victimUserID and SessionStats.playerState[victimUserID]
+    if not cached and victimUserID and victimUserID > 0 then
+        cached = {
+            entity = victim,
+            health = math.max(tonumber(victim:Health()) or 0, 0),
+            alive = false,
+            sawDeadState = not victim:Alive(),
+            deathRecorded = false,
+        }
+        SessionStats.playerState[victimUserID] = cached
+    end
+    if cached and cached.deathRecorded then return false end
+
+    SessionStats.recentDeaths[dedupKey] = now
+    for key, seenAt in pairs(SessionStats.recentDeaths) do
+        if now - seenAt > 3 then SessionStats.recentDeaths[key] = nil end
+    end
+
+    if cached then
+        cached.deathRecorded = true
+        cached.alive = false
+        cached.sawDeadState = not victim:Alive()
+        cached.deathAt = cached.deathAt or now
+    end
+
+    local lp = LocalPlayer()
+    if not IsValid(lp) or not HasAccess(lp:SteamID(), "STATS") then return false end
+
+    if victim == lp then
+        SessionStats.deaths = SessionStats.deaths + 1
+    end
+    if IsValid(attacker) and attacker:IsPlayer() and attacker == lp and victim ~= lp then
+        SessionStats.kills = SessionStats.kills + 1
+    end
+
+    return true
+end
+
+function SessionStats.HandleEntityKilled(data)
+    if not istable(data) then return end
+    local victim = Entity(tonumber(data.entindex_killed) or -1)
+    local attacker = Entity(tonumber(data.entindex_attacker) or -1)
+    SessionStats.RecordDeath(victim, attacker)
+end
+
+function SessionStats.HandlePlayerSpawn(data)
+    if not istable(data) then return end
+    local userID = tonumber(data.userid)
+    if not userID or userID <= 0 then return end
+
+    local ply = Player(userID)
+    if IsValid(ply) and ply:IsPlayer() and ply:Alive() and ply:Health() > 0 then
+        SessionStats.playerState[userID] = {
+            entity = ply,
+            health = math.max(tonumber(ply:Health()) or 0, 0),
+            alive = true,
+            sawDeadState = false,
+            deathRecorded = false,
+            updatedAt = RealTime(),
+        }
+        return
+    end
+
+    local cached = SessionStats.playerState[userID]
+    if cached then cached.spawnPending = true end
+end
+
+function SessionStats.RecordDamage(victimUserID, attackerUserID, amount)
+    amount = math.Clamp(tonumber(amount) or 0, 0, 10000)
+    if amount <= 0 then return false end
+
+    local lp = LocalPlayer()
+    if not IsValid(lp) or not HasAccess(lp:SteamID(), "STATS") then return false end
+
+    local localUserID = lp:UserID()
+    if victimUserID == localUserID then
+        SessionStats.damageTaken = SessionStats.damageTaken + amount
+    end
+    if attackerUserID == localUserID and victimUserID ~= localUserID then
+        SessionStats.damageDealt = SessionStats.damageDealt + amount
+    end
+
+    return true
+end
+
+function SessionStats.HandlePlayerHurt(data)
+    if not istable(data) then return end
+
+    local victimUserID = tonumber(data.userid)
+    local currentHealth = tonumber(data.health)
+    if not victimUserID or victimUserID <= 0 or currentHealth == nil then return end
+
+    local victim = Player(victimUserID)
+    if not IsValid(victim) or not victim:IsPlayer() then return end
+
+    currentHealth = math.max(currentHealth, 0)
+    local cached = SessionStats.playerState[victimUserID]
+    if not cached or cached.entity ~= victim then
+        cached = {
+            entity = victim,
+            health = currentHealth,
+            alive = currentHealth > 0,
+            deathRecorded = false,
+        }
+        SessionStats.playerState[victimUserID] = cached
+    end
+
+    local previousHealth = math.max(tonumber(cached.health) or currentHealth, 0)
+    local attackerUserID = tonumber(data.attacker) or 0
+    SessionStats.RecordDamage(
+        victimUserID,
+        attackerUserID,
+        math.max(previousHealth - currentHealth, 0)
+    )
+
+    cached.health = currentHealth
+    cached.alive = currentHealth > 0
+    cached.spawnPending = false
+    local observedHealth = math.max(tonumber(victim:Health()) or 0, 0)
+    if observedHealth > currentHealth then
+        cached.pendingHealth = currentHealth
+        cached.pendingHealthAt = RealTime()
+    else
+        cached.pendingHealth = nil
+        cached.pendingHealthAt = nil
+    end
+    if currentHealth <= 0 then
+        cached.sawDeadState = not victim:Alive()
+        cached.deathAt = cached.deathAt or RealTime()
+    else
+        cached.sawDeadState = false
+        cached.deathAt = nil
+        cached.deathRecorded = false
+    end
+    cached.updatedAt = RealTime()
+
+    if currentHealth <= 0 then
+        SessionStats.RecordDeath(victim, Player(attackerUserID))
+    end
+end
+
+SessionStats.RefreshPlayerState()
+hook.Add("entity_killed", RuntimeHooks.Stats .. "_Death", SessionStats.HandleEntityKilled)
+hook.Add("player_hurt", RuntimeHooks.Stats .. "_Damage", SessionStats.HandlePlayerHurt)
+hook.Add("player_spawn", RuntimeHooks.Stats .. "_Spawn", SessionStats.HandlePlayerSpawn)
+hook.Add("Think", RuntimeHooks.Stats .. "_Movement", function()
+    local lp = LocalPlayer()
+    SessionStats.RefreshPlayerState()
+    if not IsValid(lp) or not HasAccess(lp:SteamID(), "STATS") then return end
     local pos = lp:GetPos()
     if SessionStats.lastPos ~= Vector(0,0,0) then
         local d = pos:Distance(SessionStats.lastPos)
@@ -5757,14 +6032,99 @@ VisualFeatures.Killfeed.BuildPanel = function()
         VisualFeatures.Killfeed.QueueSave()
     end
 
-    ULXLabel(contentPanel, 20, 238, "Как будет выглядеть:")
+    local function OpenColorDialog(title, key, allowAlpha)
+        local currentColor = IsColor(cfg[key]) and cfg[key] or Color(255, 255, 255)
+        local dialog = vgui.Create("DFrame")
+        dialog:SetSize(340, 350)
+        dialog:Center()
+        dialog:SetTitle(title)
+        dialog:MakePopup()
+
+        local mixer = vgui.Create("DColorMixer", dialog)
+        mixer:SetPos(10, 32)
+        mixer:SetSize(320, 250)
+        mixer:SetPalette(true)
+        mixer:SetAlphaBar(allowAlpha)
+        mixer:SetWangs(true)
+        mixer:SetColor(currentColor)
+
+        ULXButton(dialog, 50, 310, 110, 28, "Применить", function()
+            local selected = mixer:GetColor()
+            cfg[key] = Color(
+                math.Clamp(math.Round(tonumber(selected.r) or 255), 0, 255),
+                math.Clamp(math.Round(tonumber(selected.g) or 255), 0, 255),
+                math.Clamp(math.Round(tonumber(selected.b) or 255), 0, 255),
+                allowAlpha and math.Clamp(math.Round(tonumber(selected.a) or 255), 0, 255) or 255
+            )
+            VisualFeatures.Killfeed.Save()
+            LogFeatureUsage(
+                "killfeed.color",
+                string.format(
+                    "%s: %d, %d, %d, %d",
+                    title,
+                    cfg[key].r,
+                    cfg[key].g,
+                    cfg[key].b,
+                    cfg[key].a
+                ),
+                "success"
+            )
+            Notify("Цвет применён")
+            dialog:Close()
+        end)
+        ULXButton(dialog, 180, 310, 110, 28, "Отмена", function()
+            dialog:Close()
+        end)
+    end
+
+    local function AddColorButton(x, title, key, allowAlpha)
+        local button = vgui.Create("DButton", contentPanel)
+        button:SetPos(x, 250)
+        button:SetSize(260, 30)
+        button:SetText("")
+        button.Paint = function(self, width, height)
+            local currentTheme = GetTheme()
+            local color = IsColor(cfg[key]) and cfg[key] or Color(255, 255, 255)
+            surface.SetDrawColor(self:IsHovered() and currentTheme.btnHover or currentTheme.btn)
+            surface.DrawRect(0, 0, width, height)
+            surface.SetDrawColor(currentTheme.border)
+            surface.DrawOutlinedRect(0, 0, width, height)
+            surface.SetDrawColor(color.r, color.g, color.b, 255)
+            surface.DrawRect(7, 6, 20, height - 12)
+            surface.SetDrawColor(220, 220, 220, 210)
+            surface.DrawOutlinedRect(7, 6, 20, height - 12)
+            draw.SimpleText(title, "Unisono_ULXBtn", 34, height / 2, currentTheme.btnText, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+            draw.SimpleText(
+                allowAlpha
+                    and string.format("%d/%d/%d · A%d", color.r, color.g, color.b, color.a or 255)
+                    or string.format("%d/%d/%d", color.r, color.g, color.b),
+                "Unisono_ULXStatus",
+                width - 8,
+                height / 2,
+                currentTheme.btnText,
+                TEXT_ALIGN_RIGHT,
+                TEXT_ALIGN_CENTER
+            )
+        end
+        button.DoClick = function()
+            OpenColorDialog("Цвет: " .. title, key, allowAlpha)
+        end
+    end
+
+    ULXLabel(contentPanel, 20, 228, "Оформление:")
+    AddColorButton(20, "Фон", "backgroundColor", true)
+    AddColorButton(296, "Шрифт", "textColor", false)
+
+    ULXLabel(contentPanel, 20, 298, "Как будет выглядеть:")
     local preview = vgui.Create("DPanel", contentPanel)
-    preview:SetPos(20, 265)
+    preview:SetPos(20, 319)
     preview:SetSize(536, 52)
     preview.Paint = function(panel, width, height)
         local attackerText = "[Образец Ящерица] Зевс парадис"
         local victimText = "[МОГ - 11 Солдат] Михаил рыбкин"
         local arrowText = "  --->  "
+        local backgroundColor = IsColor(cfg.backgroundColor) and cfg.backgroundColor or Color(12, 15, 21, 220)
+        local textColor = IsColor(cfg.textColor) and cfg.textColor or Color(235, 240, 250)
         surface.SetFont("Unisono_KillfeedPreview")
         local attackerWidth = surface.GetTextSize(attackerText)
         local arrowWidth = surface.GetTextSize(arrowText)
@@ -5772,20 +6132,31 @@ VisualFeatures.Killfeed.BuildPanel = function()
         local totalWidth = attackerWidth + arrowWidth + victimWidth
         local startX = math.max(12, width - totalWidth - 12)
 
-        draw.RoundedBox(7, 0, 7, width, 38, Color(12, 15, 21, 220))
+        draw.RoundedBox(
+            7,
+            0,
+            7,
+            width,
+            38,
+            Color(backgroundColor.r, backgroundColor.g, backgroundColor.b, backgroundColor.a or 220)
+        )
         surface.SetDrawColor(75, 85, 105, 155)
         surface.DrawOutlinedRect(0, 7, width, 38)
+        surface.SetDrawColor(105, 220, 145)
+        surface.DrawRect(0, 7, 3, 38)
+        surface.SetDrawColor(235, 105, 105)
+        surface.DrawRect(width - 3, 7, 3, 38)
         local screenX, screenY = panel:LocalToScreen(0, 0)
         render.SetScissorRect(screenX + 10, screenY + 7, screenX + width - 10, screenY + 45, true)
-        draw.SimpleText(attackerText, "Unisono_KillfeedPreview", startX, height / 2, Color(105, 220, 145), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        draw.SimpleText(attackerText, "Unisono_KillfeedPreview", startX, height / 2, textColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         startX = startX + attackerWidth
-        draw.SimpleText(arrowText, "Unisono_KillfeedPreview", startX, height / 2, Color(245, 115, 90), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        draw.SimpleText(arrowText, "Unisono_KillfeedPreview", startX, height / 2, textColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         startX = startX + arrowWidth
-        draw.SimpleText(victimText, "Unisono_KillfeedPreview", startX, height / 2, Color(235, 105, 105), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        draw.SimpleText(victimText, "Unisono_KillfeedPreview", startX, height / 2, textColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
         render.SetScissorRect(0, 0, 0, 0, false)
     end
 
-    ULXButton(contentPanel, 20, 345, 210, 30, "Показать пример на экране", function()
+    ULXButton(contentPanel, 20, 389, 210, 30, "Показать пример на экране", function()
         if not cfg.enabled then
             Notify("Сначала включите киллфид.", true)
             return
@@ -5797,15 +6168,15 @@ VisualFeatures.Killfeed.BuildPanel = function()
             Color(235, 105, 105)
         )
     end)
-    ULXButton(contentPanel, 245, 345, 150, 30, "Очистить", function()
+    ULXButton(contentPanel, 245, 389, 150, 30, "Очистить", function()
         VisualFeatures.Killfeed.Clear()
         LogFeatureUsage("killfeed.clear", "Записи очищены", "success")
         Notify("Киллфид очищен")
     end)
 
     local hint = vgui.Create("DLabel", contentPanel)
-    hint:SetPos(20, 405)
-    hint:SetSize(530, 42)
+    hint:SetPos(20, 439)
+    hint:SetSize(530, 38)
     hint:SetWrap(true)
     hint:SetText("Работает полностью на клиенте. Серверные файлы и стандартный киллфид не изменяются.")
     hint:SetTextColor(Color(165, 180, 205))
@@ -6063,7 +6434,7 @@ local function BuildStatsPanel()
     local bp = vgui.Create("DPanel", contentPanel)
     bp:Dock(BOTTOM) bp:SetHeight(40) bp.Paint = function() end
     ULXButton(bp, 10, 5, 100, 28, "Сброс", function()
-        SessionStats = { sessionStart=CurTime(), kills=0, deaths=0, damageTaken=0, damageDealt=0, distanceTraveled=0, jumps=0, lastPos=LocalPlayer():GetPos(), onGround=true }
+        SessionStats.Reset()
         LogFeatureUsage("stats.reset", "Статистика текущей сессии", "success")
         UpdateStats()
         Notify("Статистика сброшена")
@@ -6121,7 +6492,7 @@ local function BuildOopsPanel()
         VisualFeatures.PlayerTrail.Reset()
         VisualFeatures.Killfeed.Reset()
         MapNotes = {}; MapNotes_NextID = 1
-        SessionStats = { sessionStart=CurTime(), kills=0, deaths=0, damageTaken=0, damageDealt=0, distanceTraveled=0, jumps=0, lastPos=Vector(0,0,0), onGround=true }
+        SessionStats.Reset()
         if IsValid(g_SpawnMenu) and g_SpawnMenu.OriginalPaint then g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
     end)
     AddReset("Только ESP", "esp.reset", function() ESP_Enabled = false; ESP_MaxDistance = 1100 end)
