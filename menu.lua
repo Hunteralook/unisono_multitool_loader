@@ -1,13 +1,13 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.7.7 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.7.8 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist синхронизируется через
 --  GitHub Gist. Служебные данные никогда не отправляются в игровой чат.
 -- Ну ка
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.7.7"
+local SCRIPT_VERSION = "v1.7.8"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -236,6 +236,21 @@ VisualFeatures.PlayerTrail = {
     maxFootprints = 36,
     coreMaterial = Material("sprites/physbeam"),
     glowMaterial = Material("sprites/light_glow02_add"),
+}
+
+VisualFeatures.Killfeed = {
+    configPath = CLIENT_DATA_DIR .. "/killfeed.json",
+    saveTimer = "UnisonoMT_KillfeedSave",
+    eventHook = GenSafeHook(),
+    hurtHook = GenSafeHook(),
+    hudHook = GenSafeHook(),
+    config = {
+        enabled = true,
+        duration = 7,
+        maxEntries = 6,
+    },
+    entries = {},
+    recentVictims = {},
 }
 
 local ESP_Enabled = false
@@ -536,6 +551,8 @@ surface.CreateFont("Unisono_ULXStatus", { font = "Tahoma", size = 13, weight = 5
 surface.CreateFont("Unisono_Mono",      { font = "Consolas", size = 12, weight = 400, antialias = true })
 surface.CreateFont("Notes3D_Font",      { font = "Calibri", size = 20, weight = 800, antialias = true })
 surface.CreateFont("Notes3D_Font_Small",{ font = "Calibri", size = 15, weight = 600, antialias = true })
+surface.CreateFont("Unisono_Killfeed",  { font = "Tahoma", size = 16, weight = 700, antialias = true, extended = true })
+surface.CreateFont("Unisono_KillfeedPreview", { font = "Tahoma", size = 13, weight = 700, antialias = true, extended = true })
 
 local function CreateESPFont(family, size)
     ESP_FontFamily = family or "Calibri"
@@ -1776,9 +1793,232 @@ function VisualFeatures.PlayerTrail.Draw()
     if cfg.throughWalls then cam.IgnoreZ(false) end
 end
 
+-- ==================== 5.5 КЛИЕНТСКИЙ КИЛЛФИД ====================
+function VisualFeatures.Killfeed.Save()
+    local cfg = VisualFeatures.Killfeed.config
+    local payload = {
+        version = 1,
+        enabled = cfg.enabled == true,
+        duration = math.Clamp(tonumber(cfg.duration) or 7, 3, 15),
+        maxEntries = math.Clamp(math.Round(tonumber(cfg.maxEntries) or 6), 3, 10),
+    }
+    file.CreateDir(CLIENT_DATA_DIR)
+    file.Write(VisualFeatures.Killfeed.configPath, util.TableToJSON(payload, true) or "{}")
+end
+
+function VisualFeatures.Killfeed.QueueSave()
+    timer.Create(VisualFeatures.Killfeed.saveTimer, 0.25, 1, VisualFeatures.Killfeed.Save)
+end
+
+function VisualFeatures.Killfeed.Load()
+    local raw = file.Read(VisualFeatures.Killfeed.configPath, "DATA")
+    local data = raw and util.JSONToTable(raw) or nil
+    if not istable(data) then return false end
+
+    local cfg = VisualFeatures.Killfeed.config
+    cfg.enabled = data.enabled ~= false
+    cfg.duration = math.Clamp(tonumber(data.duration) or 7, 3, 15)
+    cfg.maxEntries = math.Clamp(math.Round(tonumber(data.maxEntries) or 6), 3, 10)
+    return true
+end
+
+function VisualFeatures.Killfeed.Clear()
+    VisualFeatures.Killfeed.entries = {}
+    VisualFeatures.Killfeed.recentVictims = {}
+end
+
+function VisualFeatures.Killfeed.Reset()
+    VisualFeatures.Killfeed.config = {
+        enabled = true,
+        duration = 7,
+        maxEntries = 6,
+    }
+    VisualFeatures.Killfeed.Clear()
+    VisualFeatures.Killfeed.Save()
+end
+
+function VisualFeatures.Killfeed.NormalizeText(value, fallback)
+    local text = string.Trim(tostring(value or ""))
+    text = string.gsub(text, "%c", " ")
+    text = string.gsub(text, "%s+", " ")
+    text = string.Trim(text)
+    return text ~= "" and text or fallback
+end
+
+function VisualFeatures.Killfeed.GetPlayerIdentity(ply)
+    if not IsValid(ply) or not ply:IsPlayer() then
+        return "[Мир] Окружение", Color(205, 210, 220)
+    end
+
+    local role = VisualFeatures.Killfeed.NormalizeText(team.GetName(ply:Team()), "Без профессии")
+    local rpName = nil
+    local darkRPGetter = ply.getDarkRPVar
+    if isfunction(darkRPGetter) then
+        local success, value = pcall(darkRPGetter, ply, "rpname")
+        if success then
+            rpName = VisualFeatures.Killfeed.NormalizeText(value, nil)
+        end
+    end
+    local playerName = rpName or VisualFeatures.Killfeed.NormalizeText(ply:Nick(), "Неизвестный")
+    local roleColor = team.GetColor(ply:Team())
+    if not IsColor(roleColor) then roleColor = Color(225, 225, 225) end
+
+    return "[" .. role .. "] " .. playerName, Color(roleColor.r, roleColor.g, roleColor.b)
+end
+
+function VisualFeatures.Killfeed.Prune(now)
+    now = now or RealTime()
+    local entries = VisualFeatures.Killfeed.entries
+    for index = #entries, 1, -1 do
+        if (tonumber(entries[index].expiresAt) or 0) <= now then
+            table.remove(entries, index)
+        end
+    end
+
+    local maxEntries = math.Clamp(
+        math.Round(tonumber(VisualFeatures.Killfeed.config.maxEntries) or 6),
+        3,
+        10
+    )
+    while #entries > maxEntries do table.remove(entries) end
+end
+
+function VisualFeatures.Killfeed.AddEntry(attackerText, victimText, attackerColor, victimColor)
+    if not VisualFeatures.Killfeed.config.enabled then return false end
+
+    local now = RealTime()
+    VisualFeatures.Killfeed.Prune(now)
+    table.insert(VisualFeatures.Killfeed.entries, 1, {
+        attacker = VisualFeatures.Killfeed.NormalizeText(attackerText, "[Мир] Окружение"),
+        victim = VisualFeatures.Killfeed.NormalizeText(victimText, "[Игрок] Неизвестный"),
+        attackerColor = IsColor(attackerColor) and attackerColor or Color(205, 210, 220),
+        victimColor = IsColor(victimColor) and victimColor or Color(225, 225, 225),
+        createdAt = now,
+        expiresAt = now + math.Clamp(tonumber(VisualFeatures.Killfeed.config.duration) or 7, 3, 15),
+    })
+    VisualFeatures.Killfeed.Prune(now)
+    return true
+end
+
+function VisualFeatures.Killfeed.RecordDeath(victim, attacker)
+    if not VisualFeatures.Killfeed.config.enabled then return false end
+    if not IsValid(victim) or not victim:IsPlayer() then return false end
+
+    local victimUserID = victim:UserID()
+    local dedupKey = victimUserID and victimUserID > 0 and victimUserID or ("ent:" .. victim:EntIndex())
+    local now = RealTime()
+    local lastSeen = VisualFeatures.Killfeed.recentVictims[dedupKey]
+    if lastSeen and now - lastSeen < 0.5 then return end
+    VisualFeatures.Killfeed.recentVictims[dedupKey] = now
+    for key, seenAt in pairs(VisualFeatures.Killfeed.recentVictims) do
+        if now - seenAt > 3 then VisualFeatures.Killfeed.recentVictims[key] = nil end
+    end
+
+    local attackerText, attackerColor = VisualFeatures.Killfeed.GetPlayerIdentity(attacker)
+    local victimText, victimColor = VisualFeatures.Killfeed.GetPlayerIdentity(victim)
+    return VisualFeatures.Killfeed.AddEntry(attackerText, victimText, attackerColor, victimColor)
+end
+
+function VisualFeatures.Killfeed.HandleEntityKilled(data)
+    if not istable(data) then return end
+    local victim = Entity(tonumber(data.entindex_killed) or -1)
+    local attacker = Entity(tonumber(data.entindex_attacker) or -1)
+    VisualFeatures.Killfeed.RecordDeath(victim, attacker)
+end
+
+function VisualFeatures.Killfeed.HandlePlayerHurt(data)
+    if not istable(data) then return end
+
+    local health = tonumber(data.health)
+    local victimUserID = tonumber(data.userid)
+    if health == nil or health > 0 or not victimUserID or victimUserID <= 0 then return end
+
+    local victim = Player(victimUserID)
+    local attacker = Player(tonumber(data.attacker) or 0)
+    VisualFeatures.Killfeed.RecordDeath(victim, attacker)
+end
+
+function VisualFeatures.Killfeed.Draw()
+    local cfg = VisualFeatures.Killfeed.config
+    if not cfg.enabled or #VisualFeatures.Killfeed.entries == 0 then return end
+
+    local now = RealTime()
+    VisualFeatures.Killfeed.Prune(now)
+    local entries = VisualFeatures.Killfeed.entries
+    if #entries == 0 then return end
+
+    local right = ScrW() - 20
+    local startY = 72
+    local rowHeight = 36
+    local rowGap = 6
+    local arrowText = "  --->  "
+    surface.SetFont("Unisono_Killfeed")
+    local arrowWidth = surface.GetTextSize(arrowText)
+
+    for index, entry in ipairs(entries) do
+        local remaining = entry.expiresAt - now
+        local age = now - entry.createdAt
+        local opacity = remaining < 0.85 and math.Clamp(remaining / 0.85, 0, 1) or 1
+        local enterProgress = math.Clamp(age / 0.22, 0, 1)
+        local slide = math.floor(((1 - enterProgress) ^ 2) * 42)
+        local attackerWidth = surface.GetTextSize(entry.attacker)
+        local victimWidth = surface.GetTextSize(entry.victim)
+        local naturalWidth = attackerWidth + arrowWidth + victimWidth
+        local rowWidth = math.min(naturalWidth + 28, math.max(160, ScrW() - 48))
+        local x = math.floor(right - rowWidth + slide)
+        local y = startY + (index - 1) * (rowHeight + rowGap)
+        local alpha = math.floor(255 * opacity)
+        local attackerColor = entry.attackerColor or Color(205, 210, 220)
+        local victimColor = entry.victimColor or Color(225, 225, 225)
+
+        draw.RoundedBox(7, x, y, rowWidth, rowHeight, Color(12, 15, 21, math.floor(220 * opacity)))
+        surface.SetDrawColor(75, 85, 105, math.floor(155 * opacity))
+        surface.DrawOutlinedRect(x, y, rowWidth, rowHeight)
+        surface.SetDrawColor(attackerColor.r, attackerColor.g, attackerColor.b, alpha)
+        surface.DrawRect(x, y, 3, rowHeight)
+        surface.SetDrawColor(victimColor.r, victimColor.g, victimColor.b, alpha)
+        surface.DrawRect(x + rowWidth - 3, y, 3, rowHeight)
+
+        local textX = x + rowWidth - 14 - naturalWidth
+        local textY = y + rowHeight / 2
+        render.SetScissorRect(x + 10, y, x + rowWidth - 10, y + rowHeight, true)
+        draw.SimpleText(
+            entry.attacker,
+            "Unisono_Killfeed",
+            textX,
+            textY,
+            Color(attackerColor.r, attackerColor.g, attackerColor.b, alpha),
+            TEXT_ALIGN_LEFT,
+            TEXT_ALIGN_CENTER
+        )
+        textX = textX + attackerWidth
+        draw.SimpleText(
+            arrowText,
+            "Unisono_Killfeed",
+            textX,
+            textY,
+            Color(245, 115, 90, alpha),
+            TEXT_ALIGN_LEFT,
+            TEXT_ALIGN_CENTER
+        )
+        textX = textX + arrowWidth
+        draw.SimpleText(
+            entry.victim,
+            "Unisono_Killfeed",
+            textX,
+            textY,
+            Color(victimColor.r, victimColor.g, victimColor.b, alpha),
+            TEXT_ALIGN_LEFT,
+            TEXT_ALIGN_CENTER
+        )
+        render.SetScissorRect(0, 0, 0, 0, false)
+    end
+end
+
 VisualFeatures.Atmosphere.Load()
 VisualFeatures.Weather.Load()
 VisualFeatures.PlayerTrail.Load()
+VisualFeatures.Killfeed.Load()
 
 hook.Add("RenderScreenspaceEffects", VisualFeatures.Atmosphere.screenHook, VisualFeatures.Atmosphere.DrawPostProcess)
 hook.Add("SetupWorldFog", VisualFeatures.Atmosphere.worldFogHook, function()
@@ -1797,6 +2037,11 @@ hook.Add("PostDrawTranslucentRenderables", VisualFeatures.PlayerTrail.drawHook, 
     if drawingSkybox then return end
     VisualFeatures.PlayerTrail.Draw()
 end)
+gameevent.Listen("entity_killed")
+gameevent.Listen("player_hurt")
+hook.Add("entity_killed", VisualFeatures.Killfeed.eventHook, VisualFeatures.Killfeed.HandleEntityKilled)
+hook.Add("player_hurt", VisualFeatures.Killfeed.hurtHook, VisualFeatures.Killfeed.HandlePlayerHurt)
+hook.Add("HUDPaint", VisualFeatures.Killfeed.hudHook, VisualFeatures.Killfeed.Draw)
 
 local function IsWhitelistAdmin()
     local lp = LocalPlayer()
@@ -2782,6 +3027,9 @@ function MultiTool_UnloadSelf(reason)
     SafeRemoveHook("PostDrawTranslucentRenderables", VisualFeatures.Weather.drawHook)
     SafeRemoveHook("Think", VisualFeatures.PlayerTrail.thinkHook)
     SafeRemoveHook("PostDrawTranslucentRenderables", VisualFeatures.PlayerTrail.drawHook)
+    SafeRemoveHook("entity_killed", VisualFeatures.Killfeed.eventHook)
+    SafeRemoveHook("player_hurt", VisualFeatures.Killfeed.hurtHook)
+    SafeRemoveHook("HUDPaint", VisualFeatures.Killfeed.hudHook)
     SafeRemoveHook("OnScreenSizeChanged", "Unisono_StarFieldResize")
     SafeRemoveHook("PlayerBindPress", "Unisono_MenuBind")
     SafeRemoveHook("OnPauseMenuShow", MENU_ESCAPE_HOOK)
@@ -2802,6 +3050,7 @@ function MultiTool_UnloadSelf(reason)
         VisualFeatures.Atmosphere.saveTimer,
         VisualFeatures.Weather.saveTimer,
         VisualFeatures.PlayerTrail.saveTimer,
+        VisualFeatures.Killfeed.saveTimer,
     }) do
         if timer.Exists(timerName) then timer.Remove(timerName) end
     end
@@ -2811,10 +3060,12 @@ function MultiTool_UnloadSelf(reason)
     VisualFeatures.Atmosphere.Save()
     VisualFeatures.Weather.Save()
     VisualFeatures.PlayerTrail.Save()
+    VisualFeatures.Killfeed.Save()
     if SaveProcessedClientCommands then SaveProcessedClientCommands() end
     ClearBodyFXTrails()
     VisualFeatures.Weather.Clear()
     VisualFeatures.PlayerTrail.Clear()
+    VisualFeatures.Killfeed.Clear()
     if IsWhitelistAdmin() then SaveAdminUsageLogs() end
     if IsValid(g_SpawnMenu) and g_SpawnMenu.OriginalPaint then g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
     if _G.UnisonoMultiToolUnload == MultiTool_UnloadSelf then
@@ -5449,7 +5700,118 @@ local function BuildChatPanel()
     end)
 end
 
--- 15.11 3D ЗАМЕТКИ
+-- 15.11 КИЛЛФИД
+VisualFeatures.Killfeed.BuildPanel = function()
+    ClearContent()
+    local cfg = VisualFeatures.Killfeed.config
+    local theme = GetTheme()
+
+    ULXLabel(contentPanel, 20, 20, "Клиентский киллфид")
+
+    local description = vgui.Create("DLabel", contentPanel)
+    description:SetPos(20, 48)
+    description:SetSize(530, 38)
+    description:SetWrap(true)
+    description:SetText("Показывает справа сверху, кто кого убил. Профессия и RP-имя берутся прямо из данных игроков.")
+    description:SetTextColor(theme.text)
+
+    local enabledCheck = vgui.Create("DCheckBoxLabel", contentPanel)
+    enabledCheck:SetPos(20, 96)
+    enabledCheck:SetText("Показывать киллфид")
+    enabledCheck:SetTextColor(theme.text)
+    enabledCheck:SetChecked(cfg.enabled)
+    enabledCheck:SizeToContents()
+    enabledCheck.OnChange = function(_, checked)
+        cfg.enabled = checked == true
+        if not cfg.enabled then VisualFeatures.Killfeed.Clear() end
+        VisualFeatures.Killfeed.Save()
+        LogFeatureUsage("killfeed.toggle", cfg.enabled and "Включён" or "Выключен", "success")
+    end
+
+    local durationSlider = vgui.Create("DNumSlider", contentPanel)
+    durationSlider:SetPos(14, 132)
+    durationSlider:SetSize(520, 38)
+    durationSlider:SetText("Время показа, сек.")
+    durationSlider:SetMin(3)
+    durationSlider:SetMax(15)
+    durationSlider:SetDecimals(1)
+    durationSlider:SetValue(cfg.duration)
+    if IsValid(durationSlider.Label) then durationSlider.Label:SetTextColor(theme.text) end
+    durationSlider.OnValueChanged = function(_, value)
+        cfg.duration = math.Clamp(tonumber(value) or 7, 3, 15)
+        VisualFeatures.Killfeed.QueueSave()
+    end
+
+    local maxEntriesSlider = vgui.Create("DNumSlider", contentPanel)
+    maxEntriesSlider:SetPos(14, 178)
+    maxEntriesSlider:SetSize(520, 38)
+    maxEntriesSlider:SetText("Максимум строк")
+    maxEntriesSlider:SetMin(3)
+    maxEntriesSlider:SetMax(10)
+    maxEntriesSlider:SetDecimals(0)
+    maxEntriesSlider:SetValue(cfg.maxEntries)
+    if IsValid(maxEntriesSlider.Label) then maxEntriesSlider.Label:SetTextColor(theme.text) end
+    maxEntriesSlider.OnValueChanged = function(_, value)
+        cfg.maxEntries = math.Clamp(math.Round(tonumber(value) or 6), 3, 10)
+        VisualFeatures.Killfeed.Prune()
+        VisualFeatures.Killfeed.QueueSave()
+    end
+
+    ULXLabel(contentPanel, 20, 238, "Как будет выглядеть:")
+    local preview = vgui.Create("DPanel", contentPanel)
+    preview:SetPos(20, 265)
+    preview:SetSize(536, 52)
+    preview.Paint = function(panel, width, height)
+        local attackerText = "[Образец Ящерица] Зевс парадис"
+        local victimText = "[МОГ - 11 Солдат] Михаил рыбкин"
+        local arrowText = "  --->  "
+        surface.SetFont("Unisono_KillfeedPreview")
+        local attackerWidth = surface.GetTextSize(attackerText)
+        local arrowWidth = surface.GetTextSize(arrowText)
+        local victimWidth = surface.GetTextSize(victimText)
+        local totalWidth = attackerWidth + arrowWidth + victimWidth
+        local startX = math.max(12, width - totalWidth - 12)
+
+        draw.RoundedBox(7, 0, 7, width, 38, Color(12, 15, 21, 220))
+        surface.SetDrawColor(75, 85, 105, 155)
+        surface.DrawOutlinedRect(0, 7, width, 38)
+        local screenX, screenY = panel:LocalToScreen(0, 0)
+        render.SetScissorRect(screenX + 10, screenY + 7, screenX + width - 10, screenY + 45, true)
+        draw.SimpleText(attackerText, "Unisono_KillfeedPreview", startX, height / 2, Color(105, 220, 145), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        startX = startX + attackerWidth
+        draw.SimpleText(arrowText, "Unisono_KillfeedPreview", startX, height / 2, Color(245, 115, 90), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        startX = startX + arrowWidth
+        draw.SimpleText(victimText, "Unisono_KillfeedPreview", startX, height / 2, Color(235, 105, 105), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
+        render.SetScissorRect(0, 0, 0, 0, false)
+    end
+
+    ULXButton(contentPanel, 20, 345, 210, 30, "Показать пример на экране", function()
+        if not cfg.enabled then
+            Notify("Сначала включите киллфид.", true)
+            return
+        end
+        VisualFeatures.Killfeed.AddEntry(
+            "[Образец Ящерица] Зевс парадис",
+            "[МОГ - 11 Солдат] Михаил рыбкин",
+            Color(105, 220, 145),
+            Color(235, 105, 105)
+        )
+    end)
+    ULXButton(contentPanel, 245, 345, 150, 30, "Очистить", function()
+        VisualFeatures.Killfeed.Clear()
+        LogFeatureUsage("killfeed.clear", "Записи очищены", "success")
+        Notify("Киллфид очищен")
+    end)
+
+    local hint = vgui.Create("DLabel", contentPanel)
+    hint:SetPos(20, 405)
+    hint:SetSize(530, 42)
+    hint:SetWrap(true)
+    hint:SetText("Работает полностью на клиенте. Серверные файлы и стандартный киллфид не изменяются.")
+    hint:SetTextColor(Color(165, 180, 205))
+end
+
+-- 15.12 3D ЗАМЕТКИ
 local function BuildNotesPanel()
     ClearContent()
     if not HasAccess(LocalPlayer():SteamID(), "NOTES") then
@@ -5653,7 +6015,7 @@ local function BuildNotesPanel()
     RefreshNotesList()
 end
 
--- 15.12 СТАТИСТИКА
+-- 15.13 СТАТИСТИКА
 local function BuildStatsPanel()
     ClearContent()
     if not HasAccess(LocalPlayer():SteamID(), "STATS") then
@@ -5713,7 +6075,7 @@ local function BuildStatsPanel()
     end)
 end
 
--- 15.13 OOPS
+-- 15.14 OOPS
 local function BuildOopsPanel()
     ClearContent()
     ULXLabel(contentPanel, 20, 20, "Сброс настроек")
@@ -5757,6 +6119,7 @@ local function BuildOopsPanel()
         VisualFeatures.Atmosphere.Reset()
         VisualFeatures.Weather.Reset()
         VisualFeatures.PlayerTrail.Reset()
+        VisualFeatures.Killfeed.Reset()
         MapNotes = {}; MapNotes_NextID = 1
         SessionStats = { sessionStart=CurTime(), kills=0, deaths=0, damageTaken=0, damageDealt=0, distanceTraveled=0, jumps=0, lastPos=Vector(0,0,0), onGround=true }
         if IsValid(g_SpawnMenu) and g_SpawnMenu.OriginalPaint then g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
@@ -5769,6 +6132,7 @@ local function BuildOopsPanel()
         VisualFeatures.Weather.Reset()
     end)
     AddReset("Только след игрока", "trail.reset", VisualFeatures.PlayerTrail.Reset)
+    AddReset("Только киллфид", "killfeed.reset", VisualFeatures.Killfeed.Reset)
     AddReset("Только эффекты тела", "bodyfx.reset", function()
         BodyFXConfig.enabled = false
         BodyFXConfig.preset = "right_hand"
@@ -5790,7 +6154,7 @@ local function BuildOopsPanel()
     AddReset("Только заметки", "notes.clear", function() MapNotes = {}; MapNotes_NextID = 1 end)
 end
 
--- 15.14 ТЕМЫ
+-- 15.15 ТЕМЫ
 local function BuildThemesPanel()
     ClearContent()
     ULXLabel(contentPanel, 20, 20, "Настройка темы")
@@ -5815,7 +6179,7 @@ local function BuildThemesPanel()
     ULXLabel(contentPanel, 20, y+10, "Тема применяется ко всему интерфейсу мульти-тула.", ThemeCol("text"))
 end
 
--- 15.15 ESP (!Не работает!)
+-- 15.16 ESP (!Не работает!)
 local function BuildESPPanel()
     ClearContent()
     if not HasAccess(LocalPlayer():SteamID(), "NOT_WORKING") then
@@ -5887,7 +6251,7 @@ local function BuildESPPanel()
     end)
 end
 
--- 15.16 ИССЛЕДОВАТЕЛЬ СЕРВЕРА
+-- 15.17 ИССЛЕДОВАТЕЛЬ СЕРВЕРА
 local function BuildServerExplorerPanel(parent)
     local panel = parent or contentPanel
     ClearContent(panel)
@@ -6074,7 +6438,7 @@ local function BuildServerExplorerPanel(parent)
     end)
 end
 
--- 15.17 ADMIN
+-- 15.18 ADMIN
 BuildAdminPanel = function(initialSection)
     ClearContent()
     if not IsWhitelistAdmin() then
@@ -6259,6 +6623,7 @@ function ToggleMenu()
         {"Локальная консоль", BuildConsolePanel},
         {"Q Меню (Цвет)",  BuildQMenuPanel},
         {"Чат",            BuildChatPanel},
+        {"Киллфид",        VisualFeatures.Killfeed.BuildPanel},
         {"3D Заметки",     BuildNotesPanel},
         {"Статистика",     BuildStatsPanel},
         {"Темы",           BuildThemesPanel},
