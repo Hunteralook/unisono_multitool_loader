@@ -1,13 +1,13 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.7.6 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.7.7 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist синхронизируется через
 --  GitHub Gist. Служебные данные никогда не отправляются в игровой чат.
 -- Ну ка
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.7.6"
+local SCRIPT_VERSION = "v1.7.7"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -5449,6 +5449,11 @@ local function BuildNotesPanel()
         ULXLabel(contentPanel, 20, 20, "Нет доступа к 3D Заметкам!", Color(200,50,50)) return
     end
 
+    local function BuildNoteTeleportCommand(pos)
+        if not isvector(pos) then return nil end
+        return string.format("!gotovector ^ %.3f %.3f %.3f", pos.x, pos.y, pos.z)
+    end
+
     local addPanel = vgui.Create("DPanel", contentPanel)
     addPanel:SetPos(10,10) addPanel:SetSize(560,130)
     addPanel.Paint = function(s,w,h)
@@ -5562,6 +5567,21 @@ local function BuildNotesPanel()
                         LogFeatureUsage("notes.rename", "Пустое имя", "error")
                     end
                 end)
+            end)
+            ULXButton(row, 460, 4, 78, 38, "Телепорт", function()
+                local command = BuildNoteTeleportCommand(noteLocal.pos)
+                if not command then
+                    LogFeatureUsage("notes.teleport", "Заметка #" .. tostring(noteLocal.id) .. " • некорректный вектор", "error")
+                    Notify("Некорректные координаты заметки", true)
+                    return
+                end
+                SendSafeChatCommand(command)
+                LogFeatureUsage(
+                    "notes.teleport",
+                    "Заметка #" .. tostring(noteLocal.id) .. " • " .. command,
+                    "success"
+                )
+                Notify("Команда телепортации отправлена")
             end)
         end
     end
