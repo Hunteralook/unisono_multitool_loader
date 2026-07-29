@@ -1,12 +1,12 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.7.4 — HTTP Loader Edition
---  Оригинальная менюшка сохранена; whitelist и логи синхронизируются
---  между клиентами без пользовательского серверного Lua.
+--  Unisono Multi-Tool v1.7.6 — HTTP Loader Edition
+--  Оригинальная менюшка сохранена; whitelist синхронизируется через
+--  GitHub Gist. Служебные данные никогда не отправляются в игровой чат.
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.7.4"
+local SCRIPT_VERSION = "v1.7.6"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -496,7 +496,6 @@ local BodyFXBonePresets = {
 local PEER_PROTOCOL_PREFIX = "__UMT_P2P_V1__"
 local PEER_CHUNK_SIZE = 72
 local PEER_MAX_PARTS = 180
-local PEER_SEND_INTERVAL = 0.28
 local PEER_ASSEMBLY_TIMEOUT = 15
 local PEER_CHAT_HOOK = "UnisonoMT_ClientPeerChat"
 local PEER_SEND_TIMER = "UnisonoMT_ClientPeerSend"
@@ -504,6 +503,12 @@ local PEER_CLEANUP_TIMER = "UnisonoMT_ClientPeerCleanup"
 local PEER_LOG_TIMER = "UnisonoMT_ClientPeerLogs"
 local ADMIN_LOG_SYNC_TIMER = "UnisonoMT_ClientLogSync"
 local PEER_LOG_QUEUE_MAX = 200
+local PEER_CHAT_TRANSPORT_ENABLED = false
+
+-- Stop sender timers that may have survived a hot reload from an older build.
+-- A client-only `say` relay is public server chat and cannot be hidden safely.
+timer.Remove(PEER_SEND_TIMER)
+timer.Remove(PEER_LOG_TIMER)
 
 local SessionStats = {
     sessionStart = CurTime(), kills = 0, deaths = 0,
@@ -2385,13 +2390,11 @@ SyncAdminLogsToGist = function()
     end)
 end
 
-local peer_send_queue = {}
 local peer_assemblies = {}
 local peer_log_queue = {}
 local peer_snapshot_callbacks = {}
 local peer_request_rate = {}
 local peer_log_rate = {}
-local peer_message_counter = 0
 
 local function SavePeerLogQueue()
     if IsWhitelistAdmin() then return end
@@ -2428,48 +2431,8 @@ local function FindOnlineWhitelistAdmin()
     return nil
 end
 
-local function StartPeerSendTimer()
-    if timer.Exists(PEER_SEND_TIMER) then return end
-    timer.Create(PEER_SEND_TIMER, PEER_SEND_INTERVAL, 0, function()
-        if #peer_send_queue == 0 then
-            timer.Remove(PEER_SEND_TIMER)
-            return
-        end
-        local packet = table.remove(peer_send_queue, 1)
-        RunConsoleCommand("say", packet)
-    end)
-end
-
-local function SendPeerPayload(kind, payload)
-    if not IsValid(LocalPlayer()) then return false, "Игрок ещё не загружен." end
-    local json = util.TableToJSON(payload or {}, false)
-    if not json then return false, "Не удалось собрать peer-пакет." end
-    local compressed = util.Compress(json)
-    if not compressed then return false, "Не удалось сжать peer-пакет." end
-    local encoded = util.Base64Encode(compressed)
-    if not encoded then return false, "Не удалось закодировать peer-пакет." end
-    encoded = string.gsub(encoded, "%s", "")
-
-    local total = math.ceil(#encoded / PEER_CHUNK_SIZE)
-    if total < 1 or total > PEER_MAX_PARTS then
-        return false, "Peer-пакет слишком большой: " .. tostring(total) .. " частей."
-    end
-
-    peer_message_counter = peer_message_counter + 1
-    local messageID = tostring(math.floor(RealTime() * 1000)) .. tostring(peer_message_counter % 10000)
-    for index = 1, total do
-        local chunk = string.sub(encoded, (index - 1) * PEER_CHUNK_SIZE + 1, index * PEER_CHUNK_SIZE)
-        table.insert(peer_send_queue, table.concat({
-            PEER_PROTOCOL_PREFIX,
-            tostring(kind),
-            messageID,
-            tostring(index),
-            tostring(total),
-            chunk,
-        }, "|"))
-    end
-    StartPeerSendTimer()
-    return true
+local function SendPeerPayload()
+    return false, "P2P через публичный чат отключён."
 end
 
 local function FlushPeerSnapshotCallbacks(success, data)
@@ -2513,6 +2476,7 @@ local function BroadcastWhitelistMutation(operation, steamID, permissions, persi
 end
 
 QueuePeerLog = function(row)
+    if not PEER_CHAT_TRANSPORT_ENABLED then return end
     if not istable(row) then return end
     table.insert(peer_log_queue, {
         id = string.sub(tostring(row.id or ""), 1, 128),
@@ -2698,17 +2662,6 @@ timer.Create(PEER_CLEANUP_TIMER, 5, 0, function()
     peer_snapshot_callbacks = pending
 end)
 
-timer.Create(PEER_LOG_TIMER, 5, 0, function()
-    if IsWhitelistAdmin() or #peer_log_queue == 0 or not IsValid(FindOnlineWhitelistAdmin()) then return end
-    local batch = {}
-    for _ = 1, math.min(8, #peer_log_queue) do table.insert(batch, table.remove(peer_log_queue, 1)) end
-    local success = SendPeerPayload("L", {rows = batch})
-    if not success then
-        for index = #batch, 1, -1 do table.insert(peer_log_queue, 1, batch[index]) end
-    end
-    SavePeerLogQueue()
-end)
-
 timer.Create(ADMIN_LOG_SYNC_TIMER, 30, 0, function()
     if SyncAdminLogsToGist then SyncAdminLogsToGist() end
 end)
@@ -2756,8 +2709,7 @@ local function PersistWhitelistMutationToGist(operation, steamID, permissions, c
                 PatchGistFiles({[GIST_FILENAME] = util.TableToJSON(remote, true) or "{}"}, function(writeSuccess, writeResult)
                     if writeSuccess then
                         ApplyWhitelist(remote, "github-write", false)
-                        BroadcastWhitelistMutation(operation, steamID, permissions, true)
-                        callback(true, "Whitelist сохранён в GitHub и отправлен клиентам.")
+                        callback(true, "Whitelist сохранён в GitHub; клиенты получат обновление автоматически.")
                     else
                         callback(false, tostring(writeResult))
                     end
@@ -2789,21 +2741,19 @@ local function MutateClientWhitelist(operation, steamID, permissions, callback)
         if callback then callback(false, "Не удалось применить изменение.") end
         return false
     end
-    BroadcastWhitelistMutation(operation, steamID, permissions, false)
-
     if not HasClientGitHubToken() then
-        LogFeatureUsage("whitelist." .. operation, steamID .. " • только клиенты", "success")
-        if callback then callback(true, "Изменение отправлено клиентам; GitHub token не настроен.") end
+        LogFeatureUsage("whitelist." .. operation, steamID .. " • только локально", "info")
+        if callback then callback(true, "Изменение применено только локально; GitHub token не настроен.") end
         return true
     end
 
     PersistWhitelistMutationToGist(operation, steamID, permissions, function(success, message)
         LogFeatureUsage(
             "whitelist." .. operation,
-            steamID .. (success and " • GitHub + клиенты" or " • только клиенты"),
+            steamID .. (success and " • GitHub" or " • только локально"),
             success and "success" or "error"
         )
-        if callback then callback(success, success and message or ("Между клиентами изменено, но GitHub не сохранён: " .. tostring(message))) end
+        if callback then callback(success, success and message or ("Локально изменено, но GitHub не сохранён: " .. tostring(message))) end
     end)
     return true
 end
@@ -5083,7 +5033,7 @@ local function BuildConsolePanel()
         end
 
         if command == "!reloadwhitelist" or command == "!wlreload" then
-            LogToConsole(Color(255,255,0), "Загрузка whitelist из GitHub и запрос клиенту админа...")
+            LogToConsole(Color(255,255,0), "Загрузка whitelist из GitHub...")
             whitelist_retry_count = 0
             peer_override_active = false
             LoadWhitelist(function(success, source)
@@ -5097,9 +5047,6 @@ local function BuildConsolePanel()
                     success and "success" or "error"
                 )
             end, true)
-            RequestPeerWhitelist(function(success)
-                if success then LogToConsole(Color(0,255,0), "Получена клиентская синхронизация от админа.") end
-            end)
             return
         end
 
@@ -5216,7 +5163,7 @@ BuildWhitelistAdminPanel = function(parent)
     local actionWidth3 = panelWidth - 10 - actionX3
 
     LoadClientGitHubToken()
-    local status = ULXLabel(panel, 12, 10, "Клиентская синхронизация готова.")
+    local status = ULXLabel(panel, 12, 10, "GitHub-синхронизация готова.")
     local list = vgui.Create("DListView", panel)
     list:SetPos(10, 36) list:SetSize(innerWidth, listHeight)
     list:AddColumn("SteamID")
@@ -5297,7 +5244,7 @@ BuildWhitelistAdminPanel = function(parent)
             permissions[feature] = permissionBoxes[feature]:GetChecked() == true
         end
 
-        SetStatus("Отправка клиентам...")
+        SetStatus("Сохранение whitelist...")
         MutateClientWhitelist("upsert", steamID, permissions, function(success, message)
             SetStatus(message, not success)
         end)
@@ -5309,7 +5256,7 @@ BuildWhitelistAdminPanel = function(parent)
             SetStatus("Выберите строку или введите SteamID.", true)
             return
         end
-        SetStatus("Удаление и отправка клиентам...")
+        SetStatus("Удаление из whitelist...")
         MutateClientWhitelist("remove", steamID, {}, function(success, message)
             SetStatus(message, not success)
             if not WhitelistData[steamID] then steamEntry:SetText("") end
@@ -5317,14 +5264,14 @@ BuildWhitelistAdminPanel = function(parent)
     end)
 
     ULXButton(panel, actionX3, actionsY, actionWidth3, 26, "Перезагрузить", function()
-        SetStatus("GitHub + запрос клиенту админа...")
+        SetStatus("Загрузка из GitHub...")
         peer_override_active = false
         LoadWhitelist(function(success, source)
             if success then
                 RefreshWhitelist(WhitelistData)
                 SetStatus("Whitelist загружен: " .. tostring(source) .. ".")
             else
-                SetStatus("GitHub недоступен; ожидается peer-ответ.", true)
+                SetStatus("GitHub недоступен.", true)
             end
             LogFeatureUsage(
                 "whitelist.reload",
@@ -5332,15 +5279,9 @@ BuildWhitelistAdminPanel = function(parent)
                 success and "success" or "error"
             )
         end, true)
-        RequestPeerWhitelist(function(success, data)
-            if success then
-                RefreshWhitelist(data)
-                SetStatus("Получен whitelist клиента админа.")
-            end
-        end)
     end)
 
-    local hint = ULXLabel(panel, 10, hintY, "Изменения сразу идут клиентам; GitHub сохраняется при настроенном token.")
+    local hint = ULXLabel(panel, 10, hintY, "Изменения публикуются через GitHub; клиенты обновляют whitelist автоматически.")
     hint:SetTextColor(ThemeCol("text"))
 
     ULXButton(panel, actionX1, footerY, actionWidth, 24, HasClientGitHubToken() and "GitHub token: ЕСТЬ" or "Настроить GitHub token", function()
@@ -5402,14 +5343,8 @@ BuildWhitelistAdminPanel = function(parent)
         ULXButton(dialog, 288, 94, 140, 26, "Закрыть", function() dialog:Close() end)
     end)
 
-    ULXButton(panel, actionX2, footerY, actionWidth, 24, "Синхр. всем клиентам", function()
-        local success, message = BroadcastWhitelistSnapshot()
-        LogFeatureUsage(
-            "whitelist.broadcast",
-            success and "Снимок отправлен клиентам" or tostring(message),
-            success and "success" or "error"
-        )
-        SetStatus(success and "Снимок whitelist отправляется клиентам." or tostring(message), not success)
+    ULXButton(panel, actionX2, footerY, actionWidth, 24, "Чат-P2P: ВЫКЛ", function()
+        SetStatus("Служебные пакеты не отправляются в публичный чат.")
     end)
 
     ULXButton(panel, actionX3, footerY, actionWidth3, 24, "Логи → GitHub", function()
@@ -5433,8 +5368,8 @@ BuildWhitelistAdminPanel = function(parent)
     RefreshWhitelist(WhitelistData)
     SetStatus(
         HasClientGitHubToken()
-            and "Peer-синхронизация + запись GitHub готовы."
-            or "Peer-синхронизация готова; GitHub token не настроен.",
+            and "GitHub-синхронизация готова; публичный P2P отключён."
+            or "Whitelist читается из GitHub; для записи настройте token.",
         false
     )
 end
@@ -6398,7 +6333,7 @@ local function InitializeClientIdentityStorage()
             print("[Unisono] " .. tostring(message))
             SyncAdminLogsToGist()
         end
-    else
+    elseif PEER_CHAT_TRANSPORT_ENABLED then
         LoadPeerLogQueue()
         RequestPeerWhitelist()
     end
@@ -6428,4 +6363,4 @@ timer.Simple(3, PollClientUpdateCommands)
 _G.UnisonoMultiToolRuntimeVersion = SCRIPT_VERSION
 
 chat.AddText(Color(100,200,255), "[Мульти-тул] ", Color(255,255,255), "Unisono Multi-Tool "..SCRIPT_VERSION.." загружен через HTTP. Бинд: F1")
-print("[Unisono] Multi-Tool "..SCRIPT_VERSION.." loaded (Client Peer Edition, no custom server Lua).")
+print("[Unisono] Multi-Tool "..SCRIPT_VERSION.." loaded (GitHub sync; public chat transport disabled).")
