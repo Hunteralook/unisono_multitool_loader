@@ -1,13 +1,13 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.7.15 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.7.17 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist синхронизируется через
 --  GitHub Gist. Служебные данные никогда не отправляются в игровой чат.
 -- Ну ка
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.7.15"
+local SCRIPT_VERSION = "v1.7.17"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -257,9 +257,9 @@ VisualFeatures.Killfeed = {
 
 VisualFeatures.Fonts = {
     configPath = CLIENT_DATA_DIR .. "/fonts.json",
-    defaultESPFamily = "Calibri",
+    defaultESPFamily = "Cascadia Code",
     defaultESPSize = 20,
-    defaultMenuFamily = "Calibri",
+    defaultMenuFamily = "Cascadia Code",
     defaultMenuSize = 20,
 }
 
@@ -270,7 +270,8 @@ VisualFeatures.ESP = {
     panelWidth = 330,
     rowHeight = 26,
     premiumCache = {},
-    haloColorCache = {},
+    outlineColorCache = {},
+    outlineErrorShown = false,
     fallbackColor = Color(255, 255, 255),
     premiumKeys = {
         "premium", "Premium", "premium_level", "premiumLevel", "PremiumLevel",
@@ -285,12 +286,35 @@ VisualFeatures.ESP = {
     },
 }
 
+VisualFeatures.ESP.outlineStoreTexture = render.GetScreenEffectTexture(0)
+VisualFeatures.ESP.outlineDrawTexture = render.GetScreenEffectTexture(1)
+VisualFeatures.ESP.outlineCopyMaterial = Material("pp/copy")
+VisualFeatures.ESP.outlineMaskMaterial = CreateMaterial(
+    "UnisonoMT_ESPStencilMask",
+    "UnlitGeneric",
+    {
+        ["$basetexture"] = "color/white",
+        ["$ignorez"] = "1",
+        ["$model"] = "1",
+    }
+)
+VisualFeatures.ESP.outlineCompositeMaterial = CreateMaterial(
+    "UnisonoMT_ESPStencilComposite",
+    "UnlitGeneric",
+    {
+        ["$basetexture"] = VisualFeatures.ESP.outlineDrawTexture:GetName(),
+        ["$ignorez"] = "1",
+        ["$alphatest"] = "1",
+    }
+)
+VisualFeatures.ESP.outlineThickness = 2
+
 local ESP_Enabled = false
 local ESP_MaxDistance = 1100
-local ESP_FontFamily = "Calibri"
+local ESP_FontFamily = "Cascadia Code"
 local ESP_FontSize = 20
 local ESPFontName = "Unisono_ESPMain"
-local Menu_FontFamily = "Calibri"
+local Menu_FontFamily = "Cascadia Code"
 local Menu_FontSize = 20
 local MenuFontName = "Unisono_MenuText"
 local Physgun_RainbowEnabled = false
@@ -579,11 +603,24 @@ end
 InitStarField()
 
 -- ==================== 2. ШРИФТЫ ====================
-surface.CreateFont("Unisono_Mono",      { font = "Consolas", size = 12, weight = 400, antialias = true })
-surface.CreateFont("Notes3D_Font",      { font = "Calibri", size = 20, weight = 800, antialias = true })
-surface.CreateFont("Notes3D_Font_Small",{ font = "Calibri", size = 15, weight = 600, antialias = true })
-surface.CreateFont("Unisono_Killfeed",  { font = "Tahoma", size = 16, weight = 700, antialias = true, extended = true })
-surface.CreateFont("Unisono_KillfeedPreview", { font = "Tahoma", size = 13, weight = 700, antialias = true, extended = true })
+surface.CreateFont("Unisono_Mono", {
+    font = "Cascadia Code", size = 12, weight = 400, antialias = true, extended = true,
+})
+surface.CreateFont("Notes3D_Font", {
+    font = "Cascadia Code", size = 20, weight = 800, antialias = true, extended = true,
+})
+surface.CreateFont("Notes3D_Font_Small", {
+    font = "Cascadia Code", size = 15, weight = 600, antialias = true, extended = true,
+})
+surface.CreateFont("Unisono_Killfeed", {
+    font = "Cascadia Code", size = 16, weight = 700, antialias = true, extended = true,
+})
+surface.CreateFont("Unisono_KillfeedPreview", {
+    font = "Cascadia Code", size = 13, weight = 700, antialias = true, extended = true,
+})
+surface.CreateFont("Unisono_ChatFont", {
+    font = "Cascadia Code", size = 18, weight = 400, antialias = true, extended = true,
+})
 
 function VisualFeatures.Fonts.NormalizeFamily(value, fallback)
     local family = string.Trim(tostring(value or ""))
@@ -601,16 +638,29 @@ function VisualFeatures.Fonts.Load()
     local data = util.JSONToTable(raw)
     if not istable(data) then return end
 
-    ESP_FontFamily = VisualFeatures.Fonts.NormalizeFamily(data.espFamily, VisualFeatures.Fonts.defaultESPFamily)
+    local legacyConfig = (tonumber(data.version) or 1) < 2
+    local savedESPFamily = data.espFamily
+    local savedMenuFamily = data.menuFamily
+    if legacyConfig then
+        if string.lower(string.Trim(tostring(savedESPFamily or ""))) == "calibri" then
+            savedESPFamily = VisualFeatures.Fonts.defaultESPFamily
+        end
+        if string.lower(string.Trim(tostring(savedMenuFamily or ""))) == "calibri" then
+            savedMenuFamily = VisualFeatures.Fonts.defaultMenuFamily
+        end
+    end
+
+    ESP_FontFamily = VisualFeatures.Fonts.NormalizeFamily(savedESPFamily, VisualFeatures.Fonts.defaultESPFamily)
     ESP_FontSize = VisualFeatures.Fonts.NormalizeSize(data.espSize, VisualFeatures.Fonts.defaultESPSize)
-    Menu_FontFamily = VisualFeatures.Fonts.NormalizeFamily(data.menuFamily, VisualFeatures.Fonts.defaultMenuFamily)
+    Menu_FontFamily = VisualFeatures.Fonts.NormalizeFamily(savedMenuFamily, VisualFeatures.Fonts.defaultMenuFamily)
     Menu_FontSize = VisualFeatures.Fonts.NormalizeSize(data.menuSize, VisualFeatures.Fonts.defaultMenuSize)
+    if legacyConfig then VisualFeatures.Fonts.Save() end
 end
 
 function VisualFeatures.Fonts.Save()
     file.CreateDir(CLIENT_DATA_DIR)
     file.Write(VisualFeatures.Fonts.configPath, util.TableToJSON({
-        version = 1,
+        version = 2,
         espFamily = ESP_FontFamily,
         espSize = ESP_FontSize,
         menuFamily = Menu_FontFamily,
@@ -674,6 +724,12 @@ function VisualFeatures.Fonts.ApplyToPanel(panel)
     for _, child in ipairs(panel:GetChildren()) do
         VisualFeatures.Fonts.ApplyToPanel(child)
     end
+end
+
+function VisualFeatures.Fonts.ApplyToPanelNextTick(panel)
+    timer.Simple(0, function()
+        if IsValid(panel) then VisualFeatures.Fonts.ApplyToPanel(panel) end
+    end)
 end
 
 VisualFeatures.Fonts.Load()
@@ -3130,6 +3186,7 @@ function MultiTool_UnloadSelf(reason)
     SafeRemoveHook("HUDPaint", RuntimeHooks.ESP)
     SafeRemoveHook("Think", RuntimeHooks.ESP .. "_Hover")
     SafeRemoveHook("PreDrawHalos", RuntimeHooks.ESP .. "_Halos")
+    SafeRemoveHook("PostDrawTranslucentRenderables", RuntimeHooks.ESP .. "_Outline")
     SafeRemoveHook("PostDrawTranslucentRenderables", RuntimeHooks.ESP .. "_Gaze")
     SafeRemoveHook("RenderScreenspaceEffects", RuntimeHooks.Shader)
     SafeRemoveHook("Think", RuntimeHooks.Key)
@@ -3238,7 +3295,8 @@ end
 function VisualFeatures.ESP.Reset()
     ESP_MaxDistance = 1100
     VisualFeatures.ESP.premiumCache = {}
-    VisualFeatures.ESP.haloColorCache = {}
+    VisualFeatures.ESP.outlineColorCache = {}
+    VisualFeatures.ESP.outlineErrorShown = false
     VisualFeatures.ESP.Save()
 end
 
@@ -3354,17 +3412,224 @@ function VisualFeatures.ESP.GetProfessionColor(ply)
     return VisualFeatures.ESP.fallbackColor
 end
 
-function VisualFeatures.ESP.GetHaloColor(professionColor)
+function VisualFeatures.ESP.GetOutlineColor(professionColor)
     local red = math.Clamp(math.floor(tonumber(professionColor.r) or 255), 0, 255)
     local green = math.Clamp(math.floor(tonumber(professionColor.g) or 255), 0, 255)
     local blue = math.Clamp(math.floor(tonumber(professionColor.b) or 255), 0, 255)
     local colorKey = red .. ":" .. green .. ":" .. blue
-    local cached = VisualFeatures.ESP.haloColorCache[colorKey]
+    local cached = VisualFeatures.ESP.outlineColorCache[colorKey]
     if cached then return cached end
 
     cached = Color(red, green, blue, 255)
-    VisualFeatures.ESP.haloColorCache[colorKey] = cached
+    VisualFeatures.ESP.outlineColorCache[colorKey] = cached
     return cached
+end
+
+function VisualFeatures.ESP.BuildOutlineGroups(lp)
+    local groups = {}
+    local groupsByColor = {}
+
+    for _, ply in ipairs(player.GetAll()) do
+        if not VisualFeatures.ESP.IsCandidate(ply, lp) or ply:GetNoDraw() then continue end
+
+        local color = VisualFeatures.ESP.GetOutlineColor(VisualFeatures.ESP.GetProfessionColor(ply))
+        local colorKey = color.r .. ":" .. color.g .. ":" .. color.b
+        local group = groupsByColor[colorKey]
+        if not group and #groups < 255 then
+            group = {
+                color = color,
+                players = {},
+            }
+            groups[#groups + 1] = group
+            groupsByColor[colorKey] = group
+        end
+        if group then
+            group.players[#group.players + 1] = ply
+        end
+    end
+
+    return groups
+end
+
+function VisualFeatures.ESP.ResetOutlineRenderState(blend, red, green, blue)
+    render.SetStencilEnable(false)
+    render.ClearStencil()
+    render.SetStencilWriteMask(0xFF)
+    render.SetStencilTestMask(0xFF)
+    render.SetStencilReferenceValue(0)
+    render.SetStencilCompareFunction(STENCIL_ALWAYS)
+    render.SetStencilFailOperation(STENCIL_KEEP)
+    render.SetStencilPassOperation(STENCIL_KEEP)
+    render.SetStencilZFailOperation(STENCIL_KEEP)
+    render.MaterialOverride(nil)
+    render.OverrideColorWriteEnable(false, false)
+    render.OverrideAlphaWriteEnable(false, false)
+    render.OverrideDepthEnable(false, false)
+    render.SuppressEngineLighting(false)
+    render.SetColorModulation(red or 1, green or 1, blue or 1)
+    render.SetBlend(blend or 1)
+end
+
+function VisualFeatures.ESP.DrawStencilOutlines(groups)
+    if #groups == 0 then return end
+
+    local scene = render.GetRenderTarget()
+    local storeTexture = VisualFeatures.ESP.outlineStoreTexture
+    local drawTexture = VisualFeatures.ESP.outlineDrawTexture
+    local width, height = ScrW(), ScrH()
+    local previousBlend = render.GetBlend()
+    local previousRed, previousGreen, previousBlue = render.GetColorModulation()
+    local modelFlags = bit.bor(STUDIO_TWOPASS, STUDIO_SKIP_DECALS or 0)
+    local inside2D = false
+    local sceneStored = false
+    local sceneRestored = false
+    local drawModelError = nil
+
+    local renderSuccess, renderMessage = xpcall(function()
+        -- Preserve the finished world before building a flat,
+        -- profession-coloured silhouette mask in the current render target.
+        render.CopyRenderTargetToTexture(storeTexture)
+        sceneStored = true
+    render.ClearStencil()
+    render.SetStencilEnable(true)
+    render.SetStencilWriteMask(0xFF)
+    render.SetStencilTestMask(0xFF)
+    render.SetStencilCompareFunction(STENCIL_ALWAYS)
+    render.SetStencilFailOperation(STENCIL_KEEP)
+    render.SetStencilPassOperation(STENCIL_REPLACE)
+    render.SetStencilZFailOperation(STENCIL_REPLACE)
+
+    -- Force even transparent/cloaked playermodels into the stencil, without
+    -- changing the scene colour or its depth buffer. Z-fail replacement makes
+    -- the complete silhouette available through walls.
+    render.MaterialOverride(VisualFeatures.ESP.outlineMaskMaterial)
+    render.OverrideColorWriteEnable(true, false)
+    render.OverrideAlphaWriteEnable(true, false)
+    render.OverrideDepthEnable(true, false)
+    render.SuppressEngineLighting(true)
+    render.SetColorModulation(1, 1, 1)
+    render.SetBlend(1)
+
+    for index, group in ipairs(groups) do
+        render.SetStencilReferenceValue(index)
+        for _, ply in ipairs(group.players) do
+            if IsValid(ply) and not ply:GetNoDraw() then
+                local success, message = pcall(ply.DrawModel, ply, modelFlags)
+                if not success and not drawModelError then
+                    drawModelError = message
+                end
+            end
+        end
+    end
+
+    render.MaterialOverride(nil)
+    render.OverrideColorWriteEnable(true, true)
+    render.OverrideAlphaWriteEnable(true, true)
+    render.OverrideDepthEnable(false, false)
+    render.SuppressEngineLighting(false)
+    render.SetColorModulation(1, 1, 1)
+    render.SetBlend(1)
+
+    -- Keep the stencil, clear only colour, then paint every silhouette using
+    -- the colour of its profession.
+    render.Clear(0, 0, 0, 0, false, false)
+    render.SetStencilCompareFunction(STENCIL_EQUAL)
+    render.SetStencilFailOperation(STENCIL_KEEP)
+    render.SetStencilPassOperation(STENCIL_KEEP)
+    render.SetStencilZFailOperation(STENCIL_KEEP)
+
+    cam.Start2D()
+    inside2D = true
+    for index, group in ipairs(groups) do
+        render.SetStencilReferenceValue(index)
+        surface.SetDrawColor(group.color.r, group.color.g, group.color.b, 255)
+        surface.DrawRect(0, 0, width, height)
+    end
+    cam.End2D()
+    inside2D = false
+
+    render.OverrideColorWriteEnable(false, false)
+    render.OverrideAlphaWriteEnable(false, false)
+    render.SetStencilEnable(false)
+    render.CopyRenderTargetToTexture(drawTexture)
+    render.SetRenderTarget(scene)
+
+    -- Restore the world, then draw the mask eight times with a small offset.
+    -- Stencil value 0 clips the centre, leaving only a clean outer contour.
+    cam.Start2D()
+    inside2D = true
+    local copyMaterial = VisualFeatures.ESP.outlineCopyMaterial
+    copyMaterial:SetTexture("$basetexture", storeTexture)
+    copyMaterial:SetString("$color", "1 1 1")
+    copyMaterial:SetString("$alpha", "1")
+    render.SetMaterial(copyMaterial)
+    render.DrawScreenQuad()
+    sceneRestored = true
+
+    render.SetStencilEnable(true)
+    render.SetStencilReferenceValue(0)
+    render.SetStencilCompareFunction(STENCIL_EQUAL)
+    render.SetStencilFailOperation(STENCIL_KEEP)
+    render.SetStencilPassOperation(STENCIL_KEEP)
+    render.SetStencilZFailOperation(STENCIL_KEEP)
+
+    local outlineMaterial = VisualFeatures.ESP.outlineCompositeMaterial
+    outlineMaterial:SetTexture("$basetexture", drawTexture)
+    render.SetMaterial(outlineMaterial)
+
+    local thickness = VisualFeatures.ESP.outlineThickness
+    render.DrawScreenQuadEx(-thickness, -thickness, width, height)
+    render.DrawScreenQuadEx(-thickness, 0, width, height)
+    render.DrawScreenQuadEx(-thickness, thickness, width, height)
+    render.DrawScreenQuadEx(0, -thickness, width, height)
+    render.DrawScreenQuadEx(0, thickness, width, height)
+    render.DrawScreenQuadEx(thickness, -thickness, width, height)
+    render.DrawScreenQuadEx(thickness, 0, width, height)
+    render.DrawScreenQuadEx(thickness, thickness, width, height)
+    render.SetStencilEnable(false)
+    cam.End2D()
+    inside2D = false
+    end, debug.traceback)
+
+    if inside2D then
+        pcall(cam.End2D)
+        inside2D = false
+    end
+
+    if not renderSuccess then
+        VisualFeatures.ESP.ResetOutlineRenderState(1, 1, 1, 1)
+        if sceneStored and not sceneRestored then
+            local restoreSuccess, restoreMessage = pcall(function()
+                render.SetRenderTarget(scene)
+                cam.Start2D()
+                inside2D = true
+                local copyMaterial = VisualFeatures.ESP.outlineCopyMaterial
+                copyMaterial:SetTexture("$basetexture", storeTexture)
+                copyMaterial:SetString("$color", "1 1 1")
+                copyMaterial:SetString("$alpha", "1")
+                render.SetMaterial(copyMaterial)
+                render.DrawScreenQuad()
+                cam.End2D()
+                inside2D = false
+            end)
+            if inside2D then
+                pcall(cam.End2D)
+                inside2D = false
+            end
+            if not restoreSuccess then
+                renderMessage = tostring(renderMessage) .. "\nScene restore error: " .. tostring(restoreMessage)
+            end
+        end
+    end
+
+    render.SetRenderTarget(scene)
+    VisualFeatures.ESP.ResetOutlineRenderState(previousBlend, previousRed, previousGreen, previousBlue)
+
+    local errorMessage = not renderSuccess and renderMessage or drawModelError
+    if errorMessage and not VisualFeatures.ESP.outlineErrorShown then
+        VisualFeatures.ESP.outlineErrorShown = true
+        ErrorNoHalt("[Unisono] ESP outline render error: " .. tostring(errorMessage) .. "\n")
+    end
 end
 
 function VisualFeatures.ESP.NormalizePremium(value)
@@ -3565,33 +3830,15 @@ VisualFeatures.ESP.Load()
 
 hook.Add("Think", RuntimeHooks.ESP .. "_Hover", VisualFeatures.ESP.UpdateHoveredPlayer)
 
-hook.Add("PreDrawHalos", RuntimeHooks.ESP .. "_Halos", function()
-    if not ESP_Enabled or not VisualFeatures.ESP.HasAccess() then return end
+hook.Add("PostDrawTranslucentRenderables", RuntimeHooks.ESP .. "_Outline", function(drawingDepth, drawingSkybox)
+    if drawingDepth or drawingSkybox or not ESP_Enabled or not VisualFeatures.ESP.HasAccess() then return end
+    local view = render.GetViewSetup()
+    if view and view.viewid ~= nil and VIEW_MAIN ~= nil and view.viewid ~= VIEW_MAIN then return end
+
     local lp = LocalPlayer()
     if not IsValid(lp) then return end
 
-    local colorGroups = {}
-    for _, ply in ipairs(player.GetAll()) do
-        if not VisualFeatures.ESP.IsCandidate(ply, lp) then continue end
-        local color = VisualFeatures.ESP.GetHaloColor(VisualFeatures.ESP.GetProfessionColor(ply))
-        local colorKey = color.r .. ":" .. color.g .. ":" .. color.b
-        local group = colorGroups[colorKey]
-        if not group then
-            group = {
-                color = color,
-                players = {},
-                additive = math.max(color.r, color.g, color.b) > 24,
-            }
-            colorGroups[colorKey] = group
-        end
-        group.players[#group.players + 1] = ply
-    end
-    for _, group in pairs(colorGroups) do
-        -- Black and near-black cannot be seen with additive blending, so only
-        -- dark professions use the solid path. Bright colors stay additive.
-        -- Last argument is ignoreZ, so the contour is drawn through the world.
-        halo.Add(group.players, group.color, 2, 2, 2, group.additive, true)
-    end
+    VisualFeatures.ESP.DrawStencilOutlines(VisualFeatures.ESP.BuildOutlineGroups(lp))
 end)
 
 hook.Add("PostDrawTranslucentRenderables", RuntimeHooks.ESP .. "_Gaze", function(_, drawingSkybox)
@@ -4816,6 +5063,7 @@ local function BuildLightingWorldPanel(parent)
         dialog:Center()
         dialog:SetTitle("Цвет мира")
         dialog:MakePopup()
+        VisualFeatures.Fonts.ApplyToPanelNextTick(dialog)
 
         local mixer = vgui.Create("DColorMixer", dialog)
         mixer:SetPos(10, 32)
@@ -4916,6 +5164,7 @@ local function BuildLightingWorldPanel(parent)
         dialog:Center()
         dialog:SetTitle("Цвет тумана")
         dialog:MakePopup()
+        VisualFeatures.Fonts.ApplyToPanelNextTick(dialog)
 
         local mixer = vgui.Create("DColorMixer", dialog)
         mixer:SetPos(10, 32)
@@ -5309,6 +5558,7 @@ local function BuildFontPanel()
     ULXLabel(contentPanel, 240, 106, "Меню: " .. Menu_FontFamily .. " / " .. Menu_FontSize .. " px")
     ULXButton(contentPanel, 20, 60, 200, 30, "Шрифт ESP", function()
         local dlg = vgui.Create("DFrame") dlg:SetSize(300,130) dlg:Center() dlg:SetTitle("Шрифт ESP") dlg:MakePopup()
+        VisualFeatures.Fonts.ApplyToPanelNextTick(dlg)
         local f = vgui.Create("DTextEntry", dlg) f:SetPos(10,30) f:SetSize(280,25) f:SetText(ESP_FontFamily)
         local s = vgui.Create("DNumSlider", dlg) s:SetPos(10,60) s:SetSize(280,30) s:SetText("Размер") s:SetMin(12) s:SetMax(60) s:SetDecimals(0) s:SetValue(ESP_FontSize)
         ULXButton(dlg, 100, 95, 100, 25, "Применить", function()
@@ -5324,6 +5574,7 @@ local function BuildFontPanel()
     end)
     ULXButton(contentPanel, 20, 100, 200, 30, "Шрифт Меню", function()
         local dlg = vgui.Create("DFrame") dlg:SetSize(300,130) dlg:Center() dlg:SetTitle("Шрифт Меню") dlg:MakePopup()
+        VisualFeatures.Fonts.ApplyToPanelNextTick(dlg)
         local f = vgui.Create("DTextEntry", dlg) f:SetPos(10,30) f:SetSize(280,25) f:SetText(Menu_FontFamily)
         local s = vgui.Create("DNumSlider", dlg) s:SetPos(10,60) s:SetSize(280,30) s:SetText("Размер") s:SetMin(12) s:SetMax(60) s:SetDecimals(0) s:SetValue(Menu_FontSize)
         ULXButton(dlg, 100, 95, 100, 25, "Применить", function()
@@ -5339,7 +5590,7 @@ local function BuildFontPanel()
     end)
     ULXButton(contentPanel, 20, 150, 200, 30, "Сбросить шрифты", function()
         VisualFeatures.Fonts.Reset()
-        LogFeatureUsage("font.reset", "Calibri • 20 px", "success")
+        LogFeatureUsage("font.reset", "Cascadia Code • 20 px", "success")
         Notify("Шрифты сброшены")
         BuildFontPanel()
     end)
@@ -5577,6 +5828,7 @@ local function BuildBodyFXPanel()
         dialog:Center()
         dialog:SetTitle("Цвет эффекта")
         dialog:MakePopup()
+        VisualFeatures.Fonts.ApplyToPanelNextTick(dialog)
 
         local mixer = vgui.Create("DColorMixer", dialog)
         mixer:SetPos(10, 32)
@@ -6274,6 +6526,7 @@ BuildWhitelistAdminPanel = function(parent)
         dialog:Center()
         dialog:SetTitle("GitHub token — сохраняется в GMod data")
         dialog:MakePopup()
+        VisualFeatures.Fonts.ApplyToPanelNextTick(dialog)
 
         local tokenStatus = ULXLabel(
             dialog,
@@ -6414,7 +6667,11 @@ local function BuildChatPanel()
     ULXLabel(contentPanel, 20, 60, "Размер текста:")
     local s1 = vgui.Create("DNumSlider", contentPanel)
     s1:SetPos(20,80) s1:SetSize(400,30) s1:SetText("") s1:SetMin(12) s1:SetMax(24) s1:SetDecimals(0) s1:SetValue(18)
-    s1.OnValueChanged = function(_,v) surface.CreateFont("Unisono_ChatFont", {font="Roboto", size=v, weight=400, antialias=true}) end
+    s1.OnValueChanged = function(_,v)
+        surface.CreateFont("Unisono_ChatFont", {
+            font = "Cascadia Code", size = v, weight = 400, antialias = true, extended = true,
+        })
+    end
 
     ULXLabel(contentPanel, 20, 130, "Прозрачность фона:")
     local s2 = vgui.Create("DNumSlider", contentPanel)
@@ -6496,6 +6753,7 @@ VisualFeatures.Killfeed.BuildPanel = function()
         dialog:Center()
         dialog:SetTitle(title)
         dialog:MakePopup()
+        VisualFeatures.Fonts.ApplyToPanelNextTick(dialog)
 
         local mixer = vgui.Create("DColorMixer", dialog)
         mixer:SetPos(10, 32)
@@ -6681,6 +6939,7 @@ local function BuildNotesPanel()
     colorPreview.DoClick = function()
         local picker = vgui.Create("DFrame") picker:SetSize(260,220) picker:Center()
         picker:SetTitle("Цвет заметки") picker:MakePopup()
+        VisualFeatures.Fonts.ApplyToPanelNextTick(picker)
         local mixer = vgui.Create("DColorMixer", picker)
         mixer:SetPos(10,30) mixer:SetSize(240,140) mixer:SetColor(selectedColor)
         ULXButton(picker, 80, 180, 100, 24, "OK", function() selectedColor = mixer:GetColor() picker:Close() end)
@@ -6752,6 +7011,7 @@ local function BuildNotesPanel()
             end)
             ULXButton(row, 350, 24, 105, 18, "Переимен.", function()
                 local dlg = vgui.Create("DFrame") dlg:SetSize(300,90) dlg:Center() dlg:SetTitle("Редактировать") dlg:MakePopup()
+                VisualFeatures.Fonts.ApplyToPanelNextTick(dlg)
                 local e = vgui.Create("DTextEntry", dlg) e:SetPos(10,30) e:SetSize(280,22) e:SetText(noteLocal.text)
                 ULXButton(dlg, 90, 60, 120, 22, "Сохранить", function()
                     local nt = string.Trim(e:GetValue())
@@ -6828,6 +7088,7 @@ local function BuildNotesPanel()
 
     local btnClearAll = ULXButton(contentPanel, 10, 500, 150, 24, "Удалить все", function()
         local dlg = vgui.Create("DFrame") dlg:SetSize(300,100) dlg:Center() dlg:SetTitle("Подтверждение") dlg:MakePopup()
+        VisualFeatures.Fonts.ApplyToPanelNextTick(dlg)
         ULXLabel(dlg, 20, 30, "Удалить ВСЕ заметки?")
         ULXButton(dlg, 40, 60, 100, 24, "Да", function()
             local removedCount = #MapNotes
@@ -6912,6 +7173,7 @@ local function BuildOopsPanel()
         ULXButton(contentPanel, 20, y, 300, 28, text, function()
             local dlg = vgui.Create("DFrame") dlg:SetSize(320,100) dlg:Center()
             dlg:SetTitle("Подтверждение") dlg:MakePopup()
+            VisualFeatures.Fonts.ApplyToPanelNextTick(dlg)
             ULXLabel(dlg, 20, 30, "Сбросить "..text.."?")
             ULXButton(dlg, 40, 60, 100, 24, "Да", function()
                 fn()
@@ -7023,6 +7285,7 @@ local function BuildESPPanel()
     end)
     ULXButton(contentPanel, 20, 100, 200, 28, "Дальность: "..ESP_MaxDistance, function()
         local dlg = vgui.Create("DFrame") dlg:SetSize(250,80) dlg:Center() dlg:SetTitle("Дальность ESP") dlg:MakePopup()
+        VisualFeatures.Fonts.ApplyToPanelNextTick(dlg)
         local e = vgui.Create("DTextEntry", dlg) e:SetPos(10,35) e:SetSize(150,22) e:SetText(tostring(ESP_MaxDistance)) e:SetNumeric(true)
         ULXButton(dlg, 170, 35, 60, 22, "OK", function()
             local v = tonumber(e:GetValue())
