@@ -1,13 +1,13 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.7.11 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.7.12 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist синхронизируется через
 --  GitHub Gist. Служебные данные никогда не отправляются в игровой чат.
 -- Ну ка
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.7.11"
+local SCRIPT_VERSION = "v1.7.12"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -256,10 +256,15 @@ VisualFeatures.Killfeed = {
 }
 
 VisualFeatures.ESP = {
+    configPath = CLIENT_DATA_DIR .. "/esp.json",
     hoveredPlayer = nil,
     hoverUntil = 0,
     panelWidth = 330,
     rowHeight = 26,
+    config = {
+        outlineColor = Color(255, 45, 45),
+        selectedColor = Color(255, 45, 45),
+    },
 }
 
 local ESP_Enabled = false
@@ -584,21 +589,9 @@ end
 CreateMenuFont(Menu_FontFamily, Menu_FontSize)
 
 -- ==================== 3. ЦВЕТА ====================
-local ESP_RoleColors = {
-    user = Color(255,0,0), assistant = Color(255,255,0), media = Color(0,255,255),
-    helper = Color(255,255,150), moder_m = Color(255,105,180),
-    moder = Color(255,20,147), admin_m = Color(255,100,100),
-    admin = Color(255,0,0), admin_s = Color(200,0,0),
-    headadmin = Color(255,50,50), gamemaster_nov = Color(150,255,150),
-    gamemaster_m = Color(100,255,100), gamemaster = Color(0,255,0),
-    gamemaster_s = Color(0,200,0), headgamemaster = Color(0,150,0),
-    visor_m = Color(100,100,255), visor = Color(50,50,255),
-    visor_s = Color(0,0,200), supervisor = Color(0,0,255),
-    headmaster = Color(148,0,211), vicecurator = Color(178,34,34),
-    curator = Color(139,0,0), techadmin = "rainbow",
-    spectator = Color(150,150,150), manager_m = Color(255,140,0),
-    owner = "rainbow_letters",
-}
+-- ESP colors are configured manually in its panel. They deliberately do not
+-- depend on ULX ranks, so a role such as "assistant" cannot force yellow.
+
 -- ==================== 4. ТЕМЫ ULX МЕНЮ ====================
 local CurrentULXTheme = "dark"
 
@@ -682,25 +675,6 @@ local function HasAccess(sid, feat)
     return WhitelistData[sid][feat] == true
 end
 local function SafeRemoveHook(ev, name) if name then hook.Remove(ev, name) end end
-local function GetRoleColor(ply)
-    local ug = ply:GetUserGroup() or "user"
-    local col = ESP_RoleColors[ug]
-    if not col then return Color(255,0,0) end
-    if col == "rainbow" then return HSVToColor((CurTime()*100)%360, 1, 1) end
-    if col == "rainbow_letters" then return Color(255,215,0) end
-    return col
-end
-local function DrawRainbowLetters(text, font, startX, y, colors)
-    surface.SetFont(font)
-    local totalW = 0
-    for i = 1, #text do totalW = totalW + surface.GetTextSize(text:sub(i,i)) end
-    local curX = startX - totalW/2
-    for i = 1, #text do
-        local ch = text:sub(i,i)
-        draw.SimpleText(ch, font, curX, y, colors[(i-1) % #colors + 1], TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
-        curX = curX + surface.GetTextSize(ch)
-    end
-end
 local function FormatTime(sec)
     local h = math.floor(sec/3600)
     local m = math.floor((sec%3600)/60)
@@ -3063,7 +3037,9 @@ end
 function MultiTool_UnloadSelf(reason)
     SafeRemoveHook("Think", RuntimeHooks.Star)
     SafeRemoveHook("HUDPaint", RuntimeHooks.ESP)
+    SafeRemoveHook("Think", RuntimeHooks.ESP .. "_Hover")
     SafeRemoveHook("PreDrawHalos", RuntimeHooks.ESP .. "_Halos")
+    SafeRemoveHook("PostDrawTranslucentRenderables", RuntimeHooks.ESP .. "_Gaze")
     SafeRemoveHook("RenderScreenspaceEffects", RuntimeHooks.Shader)
     SafeRemoveHook("Think", RuntimeHooks.Key)
     SafeRemoveHook("Think", RuntimeHooks.RGB)
@@ -3118,6 +3094,7 @@ function MultiTool_UnloadSelf(reason)
     VisualFeatures.Weather.Save()
     VisualFeatures.PlayerTrail.Save()
     VisualFeatures.Killfeed.Save()
+    VisualFeatures.ESP.Save()
     if SaveProcessedClientCommands then SaveProcessedClientCommands() end
     ClearBodyFXTrails()
     VisualFeatures.Weather.Clear()
@@ -3149,6 +3126,65 @@ end)
 hook.Add("OnScreenSizeChanged", "Unisono_StarFieldResize", InitStarField)
 
 -- ==================== 9. ESP ====================
+function VisualFeatures.ESP.NormalizeColor(value, fallback)
+    fallback = fallback or Color(255, 45, 45)
+    if not istable(value) then
+        return Color(fallback.r, fallback.g, fallback.b, fallback.a or 255)
+    end
+    return Color(
+        math.Clamp(math.floor(tonumber(value.r) or fallback.r), 0, 255),
+        math.Clamp(math.floor(tonumber(value.g) or fallback.g), 0, 255),
+        math.Clamp(math.floor(tonumber(value.b) or fallback.b), 0, 255),
+        math.Clamp(math.floor(tonumber(value.a) or fallback.a or 255), 0, 255)
+    )
+end
+
+function VisualFeatures.ESP.Save()
+    file.CreateDir(CLIENT_DATA_DIR)
+    local config = VisualFeatures.ESP.config
+    local payload = {
+        version = 1,
+        maxDistance = ESP_MaxDistance,
+        outlineColor = {
+            r = config.outlineColor.r,
+            g = config.outlineColor.g,
+            b = config.outlineColor.b,
+            a = config.outlineColor.a,
+        },
+        selectedColor = {
+            r = config.selectedColor.r,
+            g = config.selectedColor.g,
+            b = config.selectedColor.b,
+            a = config.selectedColor.a,
+        },
+    }
+    file.Write(VisualFeatures.ESP.configPath, util.TableToJSON(payload, true) or "{}")
+end
+
+function VisualFeatures.ESP.Load()
+    local raw = file.Read(VisualFeatures.ESP.configPath, "DATA")
+    if not raw or raw == "" then return end
+    local data = util.JSONToTable(raw)
+    if not istable(data) then return end
+
+    local defaults = VisualFeatures.ESP.config
+    defaults.outlineColor = VisualFeatures.ESP.NormalizeColor(data.outlineColor, defaults.outlineColor)
+    defaults.selectedColor = VisualFeatures.ESP.NormalizeColor(data.selectedColor, defaults.selectedColor)
+    ESP_MaxDistance = math.Clamp(tonumber(data.maxDistance) or ESP_MaxDistance, 200, 10000)
+end
+
+function VisualFeatures.ESP.ResetColors(saveImmediately)
+    VisualFeatures.ESP.config.outlineColor = Color(255, 45, 45)
+    VisualFeatures.ESP.config.selectedColor = Color(255, 45, 45)
+    if saveImmediately ~= false then VisualFeatures.ESP.Save() end
+end
+
+function VisualFeatures.ESP.Reset()
+    VisualFeatures.ESP.ResetColors(false)
+    ESP_MaxDistance = 1100
+    VisualFeatures.ESP.Save()
+end
+
 function VisualFeatures.ESP.HasAccess()
     local lp = LocalPlayer()
     if not IsValid(lp) then return false end
@@ -3159,7 +3195,7 @@ function VisualFeatures.ESP.HasAccess()
 end
 
 function VisualFeatures.ESP.IsCandidate(ply, lp)
-    if not IsValid(ply) or not ply:IsPlayer() or ply == lp or not ply:Alive() then
+    if not IsValid(ply) or not ply:IsPlayer() or ply == lp or not ply:Alive() or ply:IsDormant() then
         return false
     end
     return lp:GetPos():DistToSqr(ply:GetPos()) <= ESP_MaxDistance * ESP_MaxDistance
@@ -3275,11 +3311,11 @@ function VisualFeatures.ESP.GetRows(ply)
     }
 end
 
-function VisualFeatures.ESP.DrawHoveredPlayer(ply, cursorX, cursorY)
+function VisualFeatures.ESP.DrawHoveredPlayer(ply)
     local head = VisualFeatures.ESP.GetHeadPosition(ply):ToScreen()
     if not head.visible then return end
 
-    local color = GetRoleColor(ply)
+    local color = VisualFeatures.ESP.config.selectedColor
     local rows = VisualFeatures.ESP.GetRows(ply)
     local rowHeight = VisualFeatures.ESP.rowHeight
     local panelWidth = math.Clamp(ScrW() * 0.29, VisualFeatures.ESP.panelWidth, 440)
@@ -3288,7 +3324,6 @@ function VisualFeatures.ESP.DrawHoveredPlayer(ply, cursorX, cursorY)
     local panelY = math.Clamp(head.y + 12, 20, ScrH() - panelHeight - 20)
 
     surface.SetDrawColor(color.r, color.g, color.b, 220)
-    surface.DrawLine(cursorX, cursorY, head.x, head.y)
     surface.DrawRect(panelX, panelY, 3, panelHeight)
 
     draw.SimpleTextOutlined(
@@ -3333,27 +3368,18 @@ function VisualFeatures.ESP.DrawHoveredPlayer(ply, cursorX, cursorY)
         )
         render.SetScissorRect(0, 0, 0, 0, false)
     end
-
-    surface.SetDrawColor(255, 255, 255, 230)
-    surface.DrawLine(cursorX - 6, cursorY, cursorX + 6, cursorY)
-    surface.DrawLine(cursorX, cursorY - 6, cursorX, cursorY + 6)
 end
 
-hook.Add("PreDrawHalos", RuntimeHooks.ESP .. "_Halos", function()
-    if not ESP_Enabled or not VisualFeatures.ESP.HasAccess() then return end
-    local lp = LocalPlayer()
-    if not IsValid(lp) then return end
-
-    for _, ply in ipairs(player.GetAll()) do
-        if not VisualFeatures.ESP.IsCandidate(ply, lp) then continue end
-        halo.Add({ply}, GetRoleColor(ply), 1, 1, 1, true, true)
+function VisualFeatures.ESP.UpdateHoveredPlayer()
+    if not ESP_Enabled or not VisualFeatures.ESP.HasAccess() then
+        VisualFeatures.ESP.hoveredPlayer = nil
+        return
     end
-end)
-
-hook.Add("HUDPaint", RuntimeHooks.ESP, function()
-    if not ESP_Enabled or not VisualFeatures.ESP.HasAccess() then return end
     local lp = LocalPlayer()
-    if not IsValid(lp) then return end
+    if not IsValid(lp) then
+        VisualFeatures.ESP.hoveredPlayer = nil
+        return
+    end
 
     local cursorX, cursorY, cursorVisible = VisualFeatures.ESP.GetCursorPosition()
     local hoveredPlayer = VisualFeatures.ESP.FindHoveredPlayer(lp, cursorX, cursorY, cursorVisible)
@@ -3363,9 +3389,56 @@ hook.Add("HUDPaint", RuntimeHooks.ESP, function()
     elseif CurTime() > VisualFeatures.ESP.hoverUntil then
         VisualFeatures.ESP.hoveredPlayer = nil
     end
+end
 
+VisualFeatures.ESP.Load()
+
+hook.Add("Think", RuntimeHooks.ESP .. "_Hover", VisualFeatures.ESP.UpdateHoveredPlayer)
+
+hook.Add("PreDrawHalos", RuntimeHooks.ESP .. "_Halos", function()
+    if not ESP_Enabled or not VisualFeatures.ESP.HasAccess() then return end
+    local lp = LocalPlayer()
+    if not IsValid(lp) then return end
+
+    local regularPlayers = {}
+    local selectedPlayers = {}
+    for _, ply in ipairs(player.GetAll()) do
+        if not VisualFeatures.ESP.IsCandidate(ply, lp) then continue end
+        if ply == VisualFeatures.ESP.hoveredPlayer then
+            selectedPlayers[#selectedPlayers + 1] = ply
+        else
+            regularPlayers[#regularPlayers + 1] = ply
+        end
+    end
+    if #regularPlayers > 0 then
+        halo.Add(regularPlayers, VisualFeatures.ESP.config.outlineColor, 2, 2, 2, true, true)
+    end
+    if #selectedPlayers > 0 then
+        halo.Add(selectedPlayers, VisualFeatures.ESP.config.selectedColor, 2, 2, 2, true, true)
+    end
+end)
+
+hook.Add("PostDrawTranslucentRenderables", RuntimeHooks.ESP .. "_Gaze", function(_, drawingSkybox)
+    if drawingSkybox or not ESP_Enabled or not VisualFeatures.ESP.HasAccess() then return end
+    local lp = LocalPlayer()
+    if not IsValid(lp) then return end
+
+    local ply = VisualFeatures.ESP.hoveredPlayer
+    if not VisualFeatures.ESP.IsCandidate(ply, lp) then return end
+    local startPosition = ply:EyePos()
+    local trace = util.TraceLine({
+        start = startPosition,
+        endpos = startPosition + ply:GetAimVector() * 2048,
+        filter = ply,
+        mask = MASK_SHOT,
+    })
+    render.DrawLine(startPosition, trace.HitPos, VisualFeatures.ESP.config.selectedColor, false)
+end)
+
+hook.Add("HUDPaint", RuntimeHooks.ESP, function()
+    if not ESP_Enabled or not VisualFeatures.ESP.HasAccess() then return end
     if IsValid(VisualFeatures.ESP.hoveredPlayer) then
-        VisualFeatures.ESP.DrawHoveredPlayer(VisualFeatures.ESP.hoveredPlayer, cursorX, cursorY)
+        VisualFeatures.ESP.DrawHoveredPlayer(VisualFeatures.ESP.hoveredPlayer)
     end
 end)
 
@@ -6656,7 +6729,7 @@ local function BuildOopsPanel()
         y = y + 38
     end
     AddReset("Все настройки", "settings.reset_all", function()
-        ESP_Enabled = false; ESP_MaxDistance = 1100
+        ESP_Enabled = false; VisualFeatures.ESP.Reset()
         ShaderStates = {}; ActiveShaderIndex = 1; ActivateShader(1)
         Physgun_RainbowEnabled = false; QMenu_RainbowEnabled = false; QMenu_CustomColor = nil
         BodyFXConfig.enabled = false
@@ -6684,7 +6757,7 @@ local function BuildOopsPanel()
         SessionStats.Reset()
         if IsValid(g_SpawnMenu) and g_SpawnMenu.OriginalPaint then g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
     end)
-    AddReset("Только ESP", "esp.reset", function() ESP_Enabled = false; ESP_MaxDistance = 1100 end)
+    AddReset("Только ESP", "esp.reset", function() ESP_Enabled = false; VisualFeatures.ESP.Reset() end)
     AddReset("Только шейдеры", "shader.reset", function() ShaderStates = {}; ActiveShaderIndex = 1; ActivateShader(1) end)
     AddReset("Только мир", "world.reset", function()
         SkyboxFeature.Reset()
@@ -6745,6 +6818,46 @@ local function BuildESPPanel()
     if not VisualFeatures.ESP.HasAccess() then
         ULXLabel(contentPanel, 20, 20, "Нет доступа к ESP игроков!", Color(200,50,50)) return
     end
+
+    local function OpenColorPicker(configKey, title)
+        local dialog = vgui.Create("DFrame")
+        dialog:SetSize(320, 300)
+        dialog:Center()
+        dialog:SetTitle(title)
+        dialog:MakePopup()
+
+        local mixer = vgui.Create("DColorMixer", dialog)
+        mixer:SetPos(10, 30)
+        mixer:SetSize(300, 190)
+        mixer:SetPalette(true)
+        mixer:SetAlphaBar(false)
+        mixer:SetWangs(true)
+        mixer:SetColor(VisualFeatures.ESP.config[configKey])
+
+        local presets = vgui.Create("DComboBox", dialog)
+        presets:SetPos(10, 228)
+        presets:SetSize(190, 24)
+        presets:SetValue("Готовые цвета")
+        presets:AddChoice("Красный", Color(255, 45, 45))
+        presets:AddChoice("Зелёный", Color(45, 225, 95))
+        presets:AddChoice("Синий", Color(55, 145, 255))
+        presets:AddChoice("Белый", Color(245, 245, 245))
+        presets:AddChoice("Фиолетовый", Color(185, 80, 255))
+        presets:AddChoice("Оранжевый", Color(255, 145, 40))
+        presets.OnSelect = function(_, _, _, color)
+            if color then mixer:SetColor(color) end
+        end
+
+        ULXButton(dialog, 210, 228, 100, 24, "Применить", function()
+            local color = mixer:GetColor()
+            VisualFeatures.ESP.config[configKey] = Color(color.r, color.g, color.b, 255)
+            VisualFeatures.ESP.Save()
+            LogFeatureUsage("esp.color", configKey, "success")
+            dialog:Close()
+            if IsValid(mainFrame) then BuildESPPanel() end
+        end)
+    end
+
     ULXLabel(contentPanel, 20, 20, "ESP игроков / наведение")
     local btnToggle = ULXButton(contentPanel, 20, 60, 200, 28, "Вкл / Выкл ESP", function()
         ESP_Enabled = not ESP_Enabled
@@ -6758,6 +6871,7 @@ local function BuildESPPanel()
             local v = tonumber(e:GetValue())
             if v and v >= 200 then
                 ESP_MaxDistance = v
+                VisualFeatures.ESP.Save()
                 LogFeatureUsage("esp.distance", tostring(v), "success")
                 dlg:Close()
                 Notify("Дальность: "..v)
@@ -6766,32 +6880,20 @@ local function BuildESPPanel()
             end
         end)
     end)
-    ULXButton(contentPanel, 20, 140, 200, 28, "Настройка цветов", function()
-        local dlg = vgui.Create("DFrame") dlg:SetSize(280,400) dlg:Center() dlg:SetTitle("Цвета рангов") dlg:MakePopup()
-        local sc = vgui.Create("DScrollPanel", dlg) sc:SetPos(5,30) sc:SetSize(270,320)
-        local roles = {}
-        for k,v in pairs(ESP_RoleColors) do if type(v) ~= "string" then table.insert(roles,k) end end
-        table.sort(roles)
-        for i, role in ipairs(roles) do
-            local row = vgui.Create("DButton", sc) row:SetText("") row:SetPos(0,(i-1)*28) row:SetSize(270,26)
-            row.Paint = function(s,w,h)
-                local c = ESP_RoleColors[role]
-                surface.SetDrawColor(c.r,c.g,c.b,255) surface.DrawRect(1,1,12,h-2)
-                draw.SimpleText(role, "Unisono_ULXBtn", 18, h/2, Color(50,50,50), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
-            end
-            row.DoClick = function()
-                local p = vgui.Create("DFrame") p:SetSize(260,220) p:Center() p:SetTitle("Цвет: "..role) p:MakePopup()
-                local m = vgui.Create("DColorMixer", p) m:SetPos(10,30) m:SetSize(240,140) m:SetColor(ESP_RoleColors[role])
-                ULXButton(p, 80, 180, 100, 24, "OK", function()
-                    ESP_RoleColors[role] = m:GetColor()
-                    LogFeatureUsage("esp.role_color", tostring(role), "success")
-                    p:Close()
-                end)
-            end
-        end
+    ULXButton(contentPanel, 20, 140, 200, 28, "Цвет обводки", function()
+        OpenColorPicker("outlineColor", "Цвет обводки игроков")
     end)
-    ULXLabel(contentPanel, 20, 185, "Обводка видна постоянно. Наведи прицел или курсор", ThemeCol("text"))
-    ULXLabel(contentPanel, 20, 207, "на игрока — появятся ник и правая инфопанель.", ThemeCol("text"))
+    ULXButton(contentPanel, 20, 180, 200, 28, "Цвет выбранного", function()
+        OpenColorPicker("selectedColor", "Цвет выбранного игрока")
+    end)
+    ULXButton(contentPanel, 20, 220, 200, 28, "Сбросить цвета", function()
+        VisualFeatures.ESP.ResetColors()
+        LogFeatureUsage("esp.colors_reset", "default", "success")
+        Notify("Цвета ESP сброшены")
+        if IsValid(mainFrame) then BuildESPPanel() end
+    end)
+    ULXLabel(contentPanel, 20, 270, "Наведи прицел или курсор на игрока:", ThemeCol("text"))
+    ULXLabel(contentPanel, 20, 292, "появятся данные и линия направления его взгляда.", ThemeCol("text"))
 end
 
 -- 15.17 ИССЛЕДОВАТЕЛЬ СЕРВЕРА
