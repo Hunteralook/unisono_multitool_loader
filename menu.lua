@@ -5409,11 +5409,13 @@ local function BuildQMenuPanel()
     end)
 end
 
-local function SendSafeChatCommand(cmd)
+local function SendSafeChatCommand(...)
+    local chatArgs = {...}
+    local cmd = table.concat(chatArgs, " ")
     local safeTimer = GenSafeHook()
     LogFeatureUsage("chat.command", cmd, "success")
     timer.Create(safeTimer, 0.1, 1, function()
-        RunConsoleCommand("say", cmd)
+        RunConsoleCommand("say", unpack(chatArgs))
     end)
 end
 
@@ -5451,7 +5453,7 @@ local function BuildNotesPanel()
 
     local function BuildNoteTeleportCommand(pos)
         if not isvector(pos) then return nil end
-        return string.format("!gotovector \"%.0f %.0f %.0f\"", pos.x, pos.y, pos.z)
+        return "!gotovector", string.format("\"%.0f %.0f %.0f\"", pos.x, pos.y, pos.z)
     end
 
     local addPanel = vgui.Create("DPanel", contentPanel)
@@ -5569,13 +5571,14 @@ local function BuildNotesPanel()
                 end)
             end)
             ULXButton(row, 460, 4, 78, 38, "Телепорт", function()
-                local command = BuildNoteTeleportCommand(noteLocal.pos)
-                if not command then
+                local commandName, vectorArgument = BuildNoteTeleportCommand(noteLocal.pos)
+                if not commandName then
                     LogFeatureUsage("notes.teleport", "Заметка #" .. tostring(noteLocal.id) .. " • некорректный вектор", "error")
                     Notify("Некорректные координаты заметки", true)
                     return
                 end
-                SendSafeChatCommand(command)
+                local command = commandName .. " " .. vectorArgument
+                SendSafeChatCommand(commandName, vectorArgument)
                 LogFeatureUsage(
                     "notes.teleport",
                     "Заметка #" .. tostring(noteLocal.id) .. " • " .. command,
