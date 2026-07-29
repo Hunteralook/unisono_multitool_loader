@@ -1,12 +1,12 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.7.4 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.7.5 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist и логи синхронизируются
 --  между клиентами без пользовательского серверного Lua.
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.7.4"
+local SCRIPT_VERSION = "v1.7.5"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -197,6 +197,8 @@ VisualFeatures.PlayerTrail = {
         particles = true,
         glow = true,
         throughWalls = false,
+        footprintShape = "feet",
+        footprintColor = Color(100, 220, 255),
     },
     styles = {
         fire = {
@@ -1408,8 +1410,9 @@ end
 -- ==================== 5.4 СЛЕД ЗА ИГРОКОМ ====================
 function VisualFeatures.PlayerTrail.Save()
     local cfg = VisualFeatures.PlayerTrail.config
+    local footprintColor = cfg.footprintColor or Color(100, 220, 255)
     local payload = {
-        version = 1,
+        version = 2,
         enabled = cfg.enabled == true,
         style = VisualFeatures.PlayerTrail.styles[cfg.style] and cfg.style or "fire",
         width = math.Clamp(tonumber(cfg.width) or 14, 4, 32),
@@ -1419,6 +1422,12 @@ function VisualFeatures.PlayerTrail.Save()
         particles = cfg.particles ~= false,
         glow = cfg.glow ~= false,
         throughWalls = cfg.throughWalls == true,
+        footprintShape = cfg.footprintShape == "paws" and "paws" or "feet",
+        footprintColor = {
+            r = math.Clamp(tonumber(footprintColor.r) or 100, 0, 255),
+            g = math.Clamp(tonumber(footprintColor.g) or 220, 0, 255),
+            b = math.Clamp(tonumber(footprintColor.b) or 255, 0, 255),
+        },
     }
     file.CreateDir(CLIENT_DATA_DIR)
     file.Write(VisualFeatures.PlayerTrail.configPath, util.TableToJSON(payload, true) or "{}")
@@ -1443,6 +1452,13 @@ function VisualFeatures.PlayerTrail.Load()
     cfg.particles = data.particles ~= false
     cfg.glow = data.glow ~= false
     cfg.throughWalls = data.throughWalls == true
+    cfg.footprintShape = data.footprintShape == "paws" and "paws" or "feet"
+    local footprintColor = istable(data.footprintColor) and data.footprintColor or {}
+    cfg.footprintColor = Color(
+        math.Clamp(tonumber(footprintColor.r) or 100, 0, 255),
+        math.Clamp(tonumber(footprintColor.g) or 220, 0, 255),
+        math.Clamp(tonumber(footprintColor.b) or 255, 0, 255)
+    )
     return true
 end
 
@@ -1466,17 +1482,24 @@ function VisualFeatures.PlayerTrail.Reset()
         particles = true,
         glow = true,
         throughWalls = false,
+        footprintShape = "feet",
+        footprintColor = Color(100, 220, 255),
     }
     VisualFeatures.PlayerTrail.Clear()
     VisualFeatures.PlayerTrail.Save()
 end
 
 function VisualFeatures.PlayerTrail.AddFootprint(lp, now)
+    local origin = lp:GetPos()
+    if VisualFeatures.PlayerTrail.lastFootPos
+        and VisualFeatures.PlayerTrail.lastFootPos:DistToSqr(origin) > 160000 then
+        VisualFeatures.PlayerTrail.Clear()
+    end
+
     local velocity = lp:GetVelocity()
     local planarSpeed = Vector(velocity.x, velocity.y, 0):Length()
     if not lp:OnGround() or planarSpeed < 45 then return end
 
-    local origin = lp:GetPos()
     if VisualFeatures.PlayerTrail.lastFootPos
         and VisualFeatures.PlayerTrail.lastFootPos:DistToSqr(origin) < 784 then return end
 
@@ -1569,7 +1592,8 @@ function VisualFeatures.PlayerTrail.GetColor(styleKey, index, now)
     if styleKey == "rainbow" then
         return HSVToColor((now * 140 + index * 15) % 360, 1, 1)
     elseif styleKey == "footsteps" then
-        return HSVToColor((now * 70 + index * 24) % 360, 0.75, 1)
+        local color = VisualFeatures.PlayerTrail.config.footprintColor or Color(100, 220, 255)
+        return Color(color.r, color.g, color.b)
     end
     local style = VisualFeatures.PlayerTrail.styles[styleKey] or {}
     if istable(style.palette) and #style.palette > 0 then
@@ -1602,6 +1626,52 @@ function VisualFeatures.PlayerTrail.GetRenderPosition(point, styleKey, now, inde
     return position, 1 - progress, progress
 end
 
+function VisualFeatures.PlayerTrail.DrawFootprint(footprint, width, widthScale, color)
+    local normal = footprint.normal
+    local forward = footprint.forward - normal * footprint.forward:Dot(normal)
+    if forward:LengthSqr() < 0.001 then
+        forward = normal:Cross(Vector(0, 1, 0))
+        if forward:LengthSqr() < 0.001 then forward = Vector(1, 0, 0) end
+    end
+    forward:Normalize()
+    local right = forward:Cross(normal)
+    right:Normalize()
+
+    local scale = width * widthScale
+    local rotation = forward:Angle().y
+    local function DrawPad(forwardOffset, rightOffset, padWidth, padHeight, rotationOffset)
+        render.DrawQuadEasy(
+            footprint.pos + forward * (forwardOffset * scale) + right * (rightOffset * scale),
+            normal,
+            padWidth * scale,
+            (padHeight or padWidth) * scale,
+            color,
+            rotation + (rotationOffset or 0)
+        )
+    end
+
+    if VisualFeatures.PlayerTrail.config.footprintShape == "paws" then
+        -- Кошачий отпечаток: большая центральная подушечка с двумя
+        -- верхними долями и четыре овальных пальчика, расположенных дугой.
+        DrawPad(-0.18, 0, 0.72, 0.62)
+        DrawPad(0.02, -0.19, 0.39, 0.36, -8)
+        DrawPad(0.02, 0.19, 0.39, 0.36, 8)
+        DrawPad(0.47, -0.34, 0.30, 0.24, -14)
+        DrawPad(0.61, -0.12, 0.34, 0.26, -5)
+        DrawPad(0.61, 0.12, 0.34, 0.26, 5)
+        DrawPad(0.47, 0.34, 0.30, 0.24, 14)
+    else
+        local side = footprint.side or 1
+        DrawPad(-0.48, 0, 0.42)
+        DrawPad(-0.12, 0, 0.57)
+        DrawPad(0.25, 0, 0.50)
+        DrawPad(0.54, -0.24 * side, 0.19)
+        DrawPad(0.60, -0.08 * side, 0.22)
+        DrawPad(0.62, 0.10 * side, 0.24)
+        DrawPad(0.58, 0.29 * side, 0.28)
+    end
+end
+
 function VisualFeatures.PlayerTrail.Draw()
     local lp = LocalPlayer()
     local cfg = VisualFeatures.PlayerTrail.config
@@ -1624,14 +1694,11 @@ function VisualFeatures.PlayerTrail.Draw()
         for index, footprint in ipairs(VisualFeatures.PlayerTrail.footprints) do
             local fade = 1 - math.Clamp((now - footprint.time) / lifetime, 0, 1)
             local color = VisualFeatures.PlayerTrail.GetColor("footsteps", index, now)
-            local rotation = footprint.forward:Angle().y
-            render.DrawQuadEasy(
-                footprint.pos,
-                footprint.normal,
-                width * 0.72 * widthScale,
-                width * 1.55 * widthScale,
-                Color(color.r, color.g, color.b, math.Clamp(math.floor(220 * fade * intensity), 0, 255)),
-                rotation
+            VisualFeatures.PlayerTrail.DrawFootprint(
+                footprint,
+                width,
+                widthScale,
+                Color(color.r, color.g, color.b, math.Clamp(math.floor(220 * fade * intensity), 0, 255))
             )
         end
     elseif cfg.style == "smoke" then
@@ -2314,8 +2381,34 @@ local function MergeUsageLogs(first, second)
     AddRows(first)
     AddRows(second)
     table.sort(merged, function(a, b) return tostring(a.timestamp or "") < tostring(b.timestamp or "") end)
-    while #merged > USAGE_LOG_MAX_ENTRIES do table.remove(merged, 1) end
-    return merged
+    if #merged <= USAGE_LOG_MAX_ENTRIES then return merged end
+
+    -- Резервируем последнюю запись каждого реального клиента. Иначе частые
+    -- события админа вытесняют редких игроков из списка SteamID и версий.
+    local keep, reservedSteamIDs, kept = {}, {}, 0
+    for index = #merged, 1, -1 do
+        local steamID = tostring(merged[index].steamid or "")
+        if IsValidSteamID(steamID)
+            and not reservedSteamIDs[steamID]
+            and kept < USAGE_LOG_MAX_ENTRIES then
+            reservedSteamIDs[steamID] = true
+            keep[index] = true
+            kept = kept + 1
+        end
+    end
+    for index = #merged, 1, -1 do
+        if kept >= USAGE_LOG_MAX_ENTRIES then break end
+        if not keep[index] then
+            keep[index] = true
+            kept = kept + 1
+        end
+    end
+
+    local limited = {}
+    for index, entry in ipairs(merged) do
+        if keep[index] then table.insert(limited, entry) end
+    end
+    return limited
 end
 
 local function SaveAdminUsageLogs()
@@ -2335,11 +2428,15 @@ end
 
 AppendAdminUsageLog = function(row)
     if not IsWhitelistAdmin() or not istable(row) then return end
-    table.insert(admin_usage_logs, row)
-    while #admin_usage_logs > USAGE_LOG_MAX_ENTRIES do table.remove(admin_usage_logs, 1) end
+    local identity = UsageLogIdentity(row)
+    for _, existing in ipairs(admin_usage_logs) do
+        if UsageLogIdentity(existing) == identity then return false end
+    end
+    admin_usage_logs = MergeUsageLogs(admin_usage_logs, {row})
     admin_logs_generation = admin_logs_generation + 1
     admin_logs_dirty = true
     SaveAdminUsageLogs()
+    return true
 end
 
 SyncAdminLogsToGist = function()
@@ -2392,6 +2489,7 @@ local peer_snapshot_callbacks = {}
 local peer_request_rate = {}
 local peer_log_rate = {}
 local peer_message_counter = 0
+local peer_log_inflight = nil
 
 local function SavePeerLogQueue()
     if IsWhitelistAdmin() then return end
@@ -2405,8 +2503,18 @@ local function LoadPeerLogQueue()
     if not istable(loaded) then return end
     for _, compact in ipairs(loaded) do
         if istable(compact) and isstring(compact.a) and tonumber(compact.t) then
+            local compactID = string.sub(tostring(compact.id or ""), 1, 128)
+            if compactID == "" then
+                compactID = "legacy-" .. tostring(util.CRC(table.concat({
+                    tostring(compact.t or ""),
+                    tostring(compact.a or ""),
+                    tostring(compact.d or ""),
+                    tostring(compact.m or ""),
+                    tostring(compact.s or ""),
+                }, "\31")))
+            end
             table.insert(peer_log_queue, {
-                id = string.sub(tostring(compact.id or ""), 1, 128),
+                id = compactID,
                 a = string.sub(tostring(compact.a or "unknown"), 1, 64),
                 d = string.sub(tostring(compact.d or ""), 1, 256),
                 r = NormalizeUsageResult(compact.r),
@@ -2514,8 +2622,17 @@ end
 
 QueuePeerLog = function(row)
     if not istable(row) then return end
+    local compactID = string.sub(tostring(row.id or ""), 1, 128)
+    if compactID == "" then
+        compactID = "peer-" .. tostring(util.CRC(table.concat({
+            tostring(row.unix or os.time()),
+            tostring(row.action or "unknown"),
+            tostring(row.detail or ""),
+            tostring(RealTime()),
+        }, "\31")))
+    end
     table.insert(peer_log_queue, {
-        id = string.sub(tostring(row.id or ""), 1, 128),
+        id = compactID,
         a = string.sub(tostring(row.action or "unknown"), 1, 64),
         d = string.sub(tostring(row.detail or ""), 1, 256),
         r = NormalizeUsageResult(row.result),
@@ -2595,17 +2712,52 @@ local function HandlePeerPayload(sender, kind, payload)
         return
     end
 
+    if kind == "A" then
+        if not senderIsAdmin or sender == LocalPlayer() or IsWhitelistAdmin() then return end
+        local lp = LocalPlayer()
+        if not IsValid(lp) or tostring(payload.target or "") ~= lp:SteamID64() then return end
+        if not peer_log_inflight
+            or tostring(payload.batch_id or "") ~= peer_log_inflight.id
+            or not istable(payload.ids)
+            or #payload.ids > 10 then return end
+
+        local acknowledged = {}
+        for _, eventID in ipairs(payload.ids) do
+            eventID = string.sub(tostring(eventID or ""), 1, 128)
+            if eventID ~= "" and peer_log_inflight.ids[eventID] then
+                acknowledged[eventID] = true
+            end
+        end
+        if not next(acknowledged) then return end
+
+        local retained = {}
+        for _, compact in ipairs(peer_log_queue) do
+            if not acknowledged[tostring(compact.id or "")] then
+                table.insert(retained, compact)
+            end
+        end
+        peer_log_queue = retained
+        peer_log_inflight = nil
+        SavePeerLogQueue()
+        return
+    end
+
     if kind == "L" then
         if not IsWhitelistAdmin() or sender == LocalPlayer() or not PeerLogAllowed(sender) then return end
         if not istable(payload.rows) or #payload.rows > 10 then return end
+        local batchID = string.sub(tostring(payload.batch_id or ""), 1, 128)
+        if batchID ~= "" and not string.match(batchID, "^[%w_%-]+$") then batchID = "" end
+        local acknowledged = {}
         for _, compact in ipairs(payload.rows) do
             if istable(compact) then
+                local eventID = string.sub(tostring(compact.id or ""), 1, 128)
+                if eventID == "" then continue end
                 local action = string.sub(tostring(compact.a or "unknown"), 1, 64)
                 local detail = string.sub(tostring(compact.d or ""), 1, 256)
                 local timestamp = tonumber(compact.t) or os.time()
                 AppendAdminUsageLog({
                     schema = 2,
-                    id = string.sub(tostring(compact.id or ""), 1, 128),
+                    id = eventID,
                     timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ", timestamp),
                     unix = timestamp,
                     steamid = sender:SteamID(),
@@ -2621,7 +2773,15 @@ local function HandlePeerPayload(sender, kind, payload)
                     source = "client-peer",
                     command_id = string.sub(tostring(compact.c or ""), 1, 128),
                 })
+                table.insert(acknowledged, eventID)
             end
+        end
+        if batchID ~= "" and #acknowledged > 0 then
+            SendPeerPayload("A", {
+                target = sender:SteamID64(),
+                batch_id = batchID,
+                ids = acknowledged,
+            })
         end
     end
 end
@@ -2647,7 +2807,7 @@ hook.Add("OnPlayerChat", PEER_CHAT_HOOK, function(sender, text)
     local index = tonumber(parts[4])
     local total = tonumber(parts[5])
     local chunk = parts[6]
-    if not string.match(kind or "", "^[QSML]$") then return true end
+    if not string.match(kind or "", "^[QSMLA]$") then return true end
     if not string.match(messageID or "", "^%d+$") then return true end
     if not index or not total or index < 1 or total < 1 or index > total or total > PEER_MAX_PARTS then return true end
     if not isstring(chunk) or #chunk > PEER_CHUNK_SIZE then return true end
@@ -2700,13 +2860,51 @@ end)
 
 timer.Create(PEER_LOG_TIMER, 5, 0, function()
     if IsWhitelistAdmin() or #peer_log_queue == 0 or not IsValid(FindOnlineWhitelistAdmin()) then return end
-    local batch = {}
-    for _ = 1, math.min(8, #peer_log_queue) do table.insert(batch, table.remove(peer_log_queue, 1)) end
-    local success = SendPeerPayload("L", {rows = batch})
-    if not success then
-        for index = #batch, 1, -1 do table.insert(peer_log_queue, 1, batch[index]) end
+    local now = RealTime()
+    if peer_log_inflight
+        and peer_log_inflight.sent_at > 0
+        and now - peer_log_inflight.sent_at < PEER_ASSEMBLY_TIMEOUT * 2 then return end
+
+    local batch, orderedIDs, idSet = {}, {}, {}
+    for index = 1, math.min(8, #peer_log_queue) do
+        local compact = peer_log_queue[index]
+        local eventID = string.sub(tostring(compact.id or ""), 1, 128)
+        if eventID ~= "" then
+            table.insert(batch, compact)
+            table.insert(orderedIDs, eventID)
+            idSet[eventID] = true
+        end
     end
-    SavePeerLogQueue()
+    if #batch == 0 then return end
+
+    local reuseBatch = peer_log_inflight and #orderedIDs == #peer_log_inflight.order
+    if reuseBatch then
+        for index, eventID in ipairs(orderedIDs) do
+            if peer_log_inflight.order[index] ~= eventID then
+                reuseBatch = false
+                break
+            end
+        end
+    end
+    if not reuseBatch then
+        peer_log_inflight = {
+            id = table.concat({
+                LocalPlayer():SteamID64(),
+                tostring(os.time()),
+                tostring(math.floor(now * 1000)),
+                tostring(peer_message_counter + 1),
+            }, "-"),
+            ids = idSet,
+            order = orderedIDs,
+            sent_at = 0,
+        }
+    end
+
+    local success = SendPeerPayload("L", {
+        batch_id = peer_log_inflight.id,
+        rows = batch,
+    })
+    if success then peer_log_inflight.sent_at = now end
 end)
 
 timer.Create(ADMIN_LOG_SYNC_TIMER, 30, 0, function()
@@ -4451,7 +4649,7 @@ local function BuildBodyFXPanel()
 
     local scroll = vgui.Create("DScrollPanel", contentPanel)
     scroll:Dock(FILL)
-    ULXLabel(scroll, 20, 16, "Эффекты тела rawr >~<")
+    ULXLabel(scroll, 20, 16, "Эффекты тела")
     local bodyTab = ULXButton(scroll, 286, 10, 118, 28, "На теле", function() end)
     bodyTab.Paint = function(_, w, h)
         local theme = GetTheme()
@@ -4795,7 +4993,7 @@ BuildPlayerTrailPanel = function()
     scroll:Dock(FILL)
     local cfg = VisualFeatures.PlayerTrail.config
     local t = GetTheme()
-    ULXLabel(scroll, 20, 16, "Эффекты тела rawr >~<")
+    ULXLabel(scroll, 20, 16, "Эффекты тела")
     ULXButton(scroll, 286, 10, 118, 28, "На теле", function()
         BuildBodyFXPanel()
     end)
@@ -4889,6 +5087,66 @@ BuildPlayerTrailPanel = function()
     AddTrailSlider(212, "Плотность точек", "density", 0.5, 2, 2)
     AddTrailSlider(252, "Интенсивность", "intensity", 0.4, 2, 2)
 
+    ULXLabel(scroll, 20, 302, "Форма светящихся шагов:")
+    local footprintCombo = vgui.Create("DComboBox", scroll)
+    footprintCombo:SetPos(245, 296)
+    footprintCombo:SetSize(273, 28)
+    footprintCombo:AddChoice("Обычные ступни", "feet", cfg.footprintShape ~= "paws")
+    footprintCombo:AddChoice("Лапки", "paws", cfg.footprintShape == "paws")
+    footprintCombo:SetValue(cfg.footprintShape == "paws" and "Лапки" or "Обычные ступни")
+    footprintCombo.OnSelect = function(_, _, name, key)
+        cfg.footprintShape = key == "paws" and "paws" or "feet"
+        VisualFeatures.PlayerTrail.Clear()
+        VisualFeatures.PlayerTrail.Save()
+        LogFeatureUsage("trail.option", "Форма шагов: " .. tostring(name), "success")
+    end
+
+    ULXLabel(scroll, 20, 342, "Цвет светящихся шагов:")
+    local footprintColorButton = ULXButton(scroll, 245, 336, 273, 28, "", function()
+        local dialog = vgui.Create("DFrame")
+        dialog:SetSize(300, 265)
+        dialog:Center()
+        dialog:SetTitle("Цвет светящихся шагов")
+        dialog:MakePopup()
+
+        local mixer = vgui.Create("DColorMixer", dialog)
+        mixer:SetPos(10, 32)
+        mixer:SetSize(280, 185)
+        mixer:SetPalette(true)
+        mixer:SetAlphaBar(false)
+        mixer:SetWangs(true)
+        mixer:SetColor(cfg.footprintColor or Color(100, 220, 255))
+
+        ULXButton(dialog, 100, 228, 100, 26, "Применить", function()
+            local selected = mixer:GetColor()
+            cfg.footprintColor = Color(selected.r, selected.g, selected.b)
+            VisualFeatures.PlayerTrail.Save()
+            LogFeatureUsage(
+                "trail.option",
+                string.format("Цвет шагов: RGB %d, %d, %d", selected.r, selected.g, selected.b),
+                "success"
+            )
+            dialog:Close()
+        end)
+    end)
+    footprintColorButton.Paint = function(self, w, h)
+        local theme = GetTheme()
+        local color = cfg.footprintColor or Color(100, 220, 255)
+        surface.SetDrawColor(self:IsHovered() and theme.btnHover or theme.btn)
+        surface.DrawRect(0, 0, w, h)
+        surface.SetDrawColor(color.r, color.g, color.b, 255)
+        surface.DrawRect(6, 5, 34, h - 10)
+        draw.SimpleText(
+            string.format("RGB %d, %d, %d", color.r, color.g, color.b),
+            "Unisono_ULXBtn",
+            48,
+            h / 2,
+            theme.btnText,
+            TEXT_ALIGN_LEFT,
+            TEXT_ALIGN_CENTER
+        )
+    end
+
     local function AddTrailCheck(y, text, key, enabledText, disabledText)
         local check = vgui.Create("DCheckBoxLabel", scroll)
         check:SetPos(20, y)
@@ -4908,21 +5166,21 @@ BuildPlayerTrailPanel = function()
     end
 
     AddTrailCheck(
-        302,
+        382,
         "Дополнительные искры, осколки и огненные частицы",
         "particles",
         "Дополнительные частицы включены",
         "Дополнительные частицы выключены"
     )
     AddTrailCheck(
-        332,
+        412,
         "Локально освещать пространство у начала следа",
         "glow",
         "Свечение следа включено",
         "Свечение следа выключено"
     )
     AddTrailCheck(
-        362,
+        442,
         "Показывать след сквозь стены",
         "throughWalls",
         "След виден сквозь стены",
@@ -4930,15 +5188,15 @@ BuildPlayerTrailPanel = function()
     )
 
     local hint = vgui.Create("DLabel", scroll)
-    hint:SetPos(20, 406)
+    hint:SetPos(20, 486)
     hint:SetSize(500, 48)
     hint:SetWrap(true)
     hint:SetText(
         "Огонь, лёд, молнии, радуга и дым повторяют путь игрока. "
-        .. "Светящиеся шаги ставятся попеременно на землю."
+        .. "Светящиеся ступни или лапки ставятся попеременно на землю."
     )
     hint:SetTextColor(Color(165, 180, 205))
-    scroll:GetCanvas():SetTall(470)
+    scroll:GetCanvas():SetTall(550)
 end
 
 -- 15.7 СКРИПТЫ
@@ -6292,7 +6550,7 @@ function ToggleMenu()
         {"Мир",             BuildWorldPanel},
         {"Настройки шрифта", BuildFontPanel},
         {"Физган",         BuildPhysgunPanel},
-        {"Эффекты тела rawr >~<", BuildBodyFXPanel},
+        {"Эффекты тела", BuildBodyFXPanel},
         {"Локальная консоль", BuildConsolePanel},
         {"Q Меню (Цвет)",  BuildQMenuPanel},
         {"Чат",            BuildChatPanel},
