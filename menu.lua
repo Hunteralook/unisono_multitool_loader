@@ -1,13 +1,13 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.7.13 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.7.15 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist синхронизируется через
 --  GitHub Gist. Служебные данные никогда не отправляются в игровой чат.
 -- Ну ка
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.7.13"
+local SCRIPT_VERSION = "v1.7.15"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -255,6 +255,14 @@ VisualFeatures.Killfeed = {
     recentVictims = {},
 }
 
+VisualFeatures.Fonts = {
+    configPath = CLIENT_DATA_DIR .. "/fonts.json",
+    defaultESPFamily = "Calibri",
+    defaultESPSize = 20,
+    defaultMenuFamily = "Calibri",
+    defaultMenuSize = 20,
+}
+
 VisualFeatures.ESP = {
     configPath = CLIENT_DATA_DIR .. "/esp.json",
     hoveredPlayer = nil,
@@ -262,6 +270,7 @@ VisualFeatures.ESP = {
     panelWidth = 330,
     rowHeight = 26,
     premiumCache = {},
+    haloColorCache = {},
     fallbackColor = Color(255, 255, 255),
     premiumKeys = {
         "premium", "Premium", "premium_level", "premiumLevel", "PremiumLevel",
@@ -280,10 +289,10 @@ local ESP_Enabled = false
 local ESP_MaxDistance = 1100
 local ESP_FontFamily = "Calibri"
 local ESP_FontSize = 20
-local ESPFontName = "ESP_Font_Calibri_20"
+local ESPFontName = "Unisono_ESPMain"
 local Menu_FontFamily = "Calibri"
 local Menu_FontSize = 20
-local MenuFontName = "Menu_Font_Calibri_20"
+local MenuFontName = "Unisono_MenuText"
 local Physgun_RainbowEnabled = false
 local QMenu_RainbowEnabled = false
 local QMenu_CustomColor = nil
@@ -570,31 +579,105 @@ end
 InitStarField()
 
 -- ==================== 2. ШРИФТЫ ====================
-surface.CreateFont("Unisono_ULXTitle", { font = "Tahoma", size = 16, weight = 600, antialias = true })
-surface.CreateFont("Unisono_ULXBtn",   { font = "Tahoma", size = 14, weight = 500, antialias = true })
-surface.CreateFont("Unisono_ULXStatus", { font = "Tahoma", size = 13, weight = 500, antialias = true })
 surface.CreateFont("Unisono_Mono",      { font = "Consolas", size = 12, weight = 400, antialias = true })
 surface.CreateFont("Notes3D_Font",      { font = "Calibri", size = 20, weight = 800, antialias = true })
 surface.CreateFont("Notes3D_Font_Small",{ font = "Calibri", size = 15, weight = 600, antialias = true })
 surface.CreateFont("Unisono_Killfeed",  { font = "Tahoma", size = 16, weight = 700, antialias = true, extended = true })
 surface.CreateFont("Unisono_KillfeedPreview", { font = "Tahoma", size = 13, weight = 700, antialias = true, extended = true })
-surface.CreateFont("Unisono_ESPInfo", { font = "Tahoma", size = 18, weight = 500, antialias = true, extended = true })
-surface.CreateFont("Unisono_ESPSub", { font = "Tahoma", size = 14, weight = 500, antialias = true, extended = true })
+
+function VisualFeatures.Fonts.NormalizeFamily(value, fallback)
+    local family = string.Trim(tostring(value or ""))
+    if family == "" then family = fallback end
+    return string.sub(family, 1, 64)
+end
+
+function VisualFeatures.Fonts.NormalizeSize(value, fallback)
+    return math.Clamp(math.floor(tonumber(value) or fallback), 12, 60)
+end
+
+function VisualFeatures.Fonts.Load()
+    local raw = file.Read(VisualFeatures.Fonts.configPath, "DATA")
+    if not raw then return end
+    local data = util.JSONToTable(raw)
+    if not istable(data) then return end
+
+    ESP_FontFamily = VisualFeatures.Fonts.NormalizeFamily(data.espFamily, VisualFeatures.Fonts.defaultESPFamily)
+    ESP_FontSize = VisualFeatures.Fonts.NormalizeSize(data.espSize, VisualFeatures.Fonts.defaultESPSize)
+    Menu_FontFamily = VisualFeatures.Fonts.NormalizeFamily(data.menuFamily, VisualFeatures.Fonts.defaultMenuFamily)
+    Menu_FontSize = VisualFeatures.Fonts.NormalizeSize(data.menuSize, VisualFeatures.Fonts.defaultMenuSize)
+end
+
+function VisualFeatures.Fonts.Save()
+    file.CreateDir(CLIENT_DATA_DIR)
+    file.Write(VisualFeatures.Fonts.configPath, util.TableToJSON({
+        version = 1,
+        espFamily = ESP_FontFamily,
+        espSize = ESP_FontSize,
+        menuFamily = Menu_FontFamily,
+        menuSize = Menu_FontSize,
+    }, true) or "{}")
+end
 
 local function CreateESPFont(family, size)
-    ESP_FontFamily = family or "Calibri"
-    ESP_FontSize = size or 20
-    ESPFontName = "ESP_Font_" .. ESP_FontFamily .. "_" .. ESP_FontSize
-    surface.CreateFont(ESPFontName, { font = ESP_FontFamily, size = ESP_FontSize, weight = 800, antialias = true })
+    ESP_FontFamily = VisualFeatures.Fonts.NormalizeFamily(family, VisualFeatures.Fonts.defaultESPFamily)
+    ESP_FontSize = VisualFeatures.Fonts.NormalizeSize(size, VisualFeatures.Fonts.defaultESPSize)
+    surface.CreateFont(ESPFontName, {
+        font = ESP_FontFamily, size = ESP_FontSize, weight = 800,
+        antialias = true, extended = true,
+    })
+    surface.CreateFont("Unisono_ESPInfo", {
+        font = ESP_FontFamily, size = math.max(12, ESP_FontSize - 2), weight = 500,
+        antialias = true, extended = true,
+    })
+    surface.CreateFont("Unisono_ESPSub", {
+        font = ESP_FontFamily, size = math.max(10, ESP_FontSize - 6), weight = 500,
+        antialias = true, extended = true,
+    })
 end
-CreateESPFont(ESP_FontFamily, ESP_FontSize)
 
 local function CreateMenuFont(family, size)
-    Menu_FontFamily = family or "Calibri"
-    Menu_FontSize = size or 20
-    MenuFontName = "Menu_Font_" .. Menu_FontFamily .. "_" .. Menu_FontSize
-    surface.CreateFont(MenuFontName, { font = Menu_FontFamily, size = Menu_FontSize, weight = 800, antialias = true })
+    Menu_FontFamily = VisualFeatures.Fonts.NormalizeFamily(family, VisualFeatures.Fonts.defaultMenuFamily)
+    Menu_FontSize = VisualFeatures.Fonts.NormalizeSize(size, VisualFeatures.Fonts.defaultMenuSize)
+    local titleSize = math.max(12, math.floor(Menu_FontSize * 0.8 + 0.5))
+    local buttonSize = math.max(10, math.floor(Menu_FontSize * 0.7 + 0.5))
+    local statusSize = math.max(9, math.floor(Menu_FontSize * 0.65 + 0.5))
+
+    surface.CreateFont("Unisono_ULXTitle", {
+        font = Menu_FontFamily, size = titleSize, weight = 600,
+        antialias = true, extended = true,
+    })
+    surface.CreateFont("Unisono_ULXBtn", {
+        font = Menu_FontFamily, size = buttonSize, weight = 500,
+        antialias = true, extended = true,
+    })
+    surface.CreateFont("Unisono_ULXStatus", {
+        font = Menu_FontFamily, size = statusSize, weight = 500,
+        antialias = true, extended = true,
+    })
+    surface.CreateFont(MenuFontName, {
+        font = Menu_FontFamily, size = buttonSize, weight = 500,
+        antialias = true, extended = true,
+    })
 end
+
+function VisualFeatures.Fonts.Reset()
+    CreateESPFont(VisualFeatures.Fonts.defaultESPFamily, VisualFeatures.Fonts.defaultESPSize)
+    CreateMenuFont(VisualFeatures.Fonts.defaultMenuFamily, VisualFeatures.Fonts.defaultMenuSize)
+    VisualFeatures.Fonts.Save()
+end
+
+function VisualFeatures.Fonts.ApplyToPanel(panel)
+    if not IsValid(panel) then return end
+    if isfunction(panel.SetFont) then
+        pcall(panel.SetFont, panel, MenuFontName)
+    end
+    for _, child in ipairs(panel:GetChildren()) do
+        VisualFeatures.Fonts.ApplyToPanel(child)
+    end
+end
+
+VisualFeatures.Fonts.Load()
+CreateESPFont(ESP_FontFamily, ESP_FontSize)
 CreateMenuFont(Menu_FontFamily, Menu_FontSize)
 
 -- ==================== 3. ЦВЕТА ====================
@@ -3155,6 +3238,7 @@ end
 function VisualFeatures.ESP.Reset()
     ESP_MaxDistance = 1100
     VisualFeatures.ESP.premiumCache = {}
+    VisualFeatures.ESP.haloColorCache = {}
     VisualFeatures.ESP.Save()
 end
 
@@ -3268,6 +3352,19 @@ function VisualFeatures.ESP.GetProfessionColor(ply)
         return professionColor
     end
     return VisualFeatures.ESP.fallbackColor
+end
+
+function VisualFeatures.ESP.GetHaloColor(professionColor)
+    local red = math.Clamp(math.floor(tonumber(professionColor.r) or 255), 0, 255)
+    local green = math.Clamp(math.floor(tonumber(professionColor.g) or 255), 0, 255)
+    local blue = math.Clamp(math.floor(tonumber(professionColor.b) or 255), 0, 255)
+    local colorKey = red .. ":" .. green .. ":" .. blue
+    local cached = VisualFeatures.ESP.haloColorCache[colorKey]
+    if cached then return cached end
+
+    cached = Color(red, green, blue, 255)
+    VisualFeatures.ESP.haloColorCache[colorKey] = cached
+    return cached
 end
 
 function VisualFeatures.ESP.NormalizePremium(value)
@@ -3476,19 +3573,24 @@ hook.Add("PreDrawHalos", RuntimeHooks.ESP .. "_Halos", function()
     local colorGroups = {}
     for _, ply in ipairs(player.GetAll()) do
         if not VisualFeatures.ESP.IsCandidate(ply, lp) then continue end
-        local color = VisualFeatures.ESP.GetProfessionColor(ply)
+        local color = VisualFeatures.ESP.GetHaloColor(VisualFeatures.ESP.GetProfessionColor(ply))
         local colorKey = color.r .. ":" .. color.g .. ":" .. color.b
         local group = colorGroups[colorKey]
         if not group then
-            group = {color = color, players = {}}
+            group = {
+                color = color,
+                players = {},
+                additive = math.max(color.r, color.g, color.b) > 24,
+            }
             colorGroups[colorKey] = group
         end
         group.players[#group.players + 1] = ply
     end
     for _, group in pairs(colorGroups) do
-        -- Last argument is ignoreZ: the profession-colored body contour stays
-        -- visible through world geometry while the player is in client PVS.
-        halo.Add(group.players, group.color, 0, 0, 2, true, true)
+        -- Black and near-black cannot be seen with additive blending, so only
+        -- dark professions use the solid path. Bright colors stay additive.
+        -- Last argument is ignoreZ, so the contour is drawn through the world.
+        halo.Add(group.players, group.color, 2, 2, 2, group.additive, true)
     end
 end)
 
@@ -4592,14 +4694,19 @@ local function ULXButton(parent, x, y, w, h, text, doclick)
         draw.SimpleText(text, "Unisono_ULXBtn", w2/2, h2/2, t.btnText, TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
     end
     btn.DoClick = function(...)
-        if doclick then return doclick(...) end
+        local result = nil
+        if doclick then result = doclick(...) end
+        timer.Simple(0, function()
+            if IsValid(mainFrame) then VisualFeatures.Fonts.ApplyToPanel(mainFrame) end
+        end)
+        return result
     end
     return btn
 end
 
 local function ULXLabel(parent, x, y, text, color)
     local lbl = vgui.Create("DLabel", parent)
-    lbl:SetPos(x,y) lbl:SetText(text) lbl:SizeToContents()
+    lbl:SetPos(x,y) lbl:SetFont(MenuFontName) lbl:SetText(text) lbl:SizeToContents()
     lbl:SetTextColor(color or ThemeCol("text", Color(220,220,220)))
     return lbl
 end
@@ -5198,6 +5305,8 @@ end
 local function BuildFontPanel()
     ClearContent()
     ULXLabel(contentPanel, 20, 20, "Настройки шрифтов")
+    ULXLabel(contentPanel, 240, 66, "ESP: " .. ESP_FontFamily .. " / " .. ESP_FontSize .. " px")
+    ULXLabel(contentPanel, 240, 106, "Меню: " .. Menu_FontFamily .. " / " .. Menu_FontSize .. " px")
     ULXButton(contentPanel, 20, 60, 200, 30, "Шрифт ESP", function()
         local dlg = vgui.Create("DFrame") dlg:SetSize(300,130) dlg:Center() dlg:SetTitle("Шрифт ESP") dlg:MakePopup()
         local f = vgui.Create("DTextEntry", dlg) f:SetPos(10,30) f:SetSize(280,25) f:SetText(ESP_FontFamily)
@@ -5206,8 +5315,11 @@ local function BuildFontPanel()
             local family = string.sub(string.Trim(f:GetValue()), 1, 64)
             local size = math.floor(s:GetValue())
             CreateESPFont(family, size)
-            LogFeatureUsage("font.esp.apply", family .. " • " .. tostring(size) .. " px", "success")
+            VisualFeatures.Fonts.Save()
+            LogFeatureUsage("font.esp.apply", ESP_FontFamily .. " • " .. tostring(ESP_FontSize) .. " px", "success")
             dlg:Close()
+            Notify("Шрифт ESP применён: " .. ESP_FontFamily)
+            BuildFontPanel()
         end)
     end)
     ULXButton(contentPanel, 20, 100, 200, 30, "Шрифт Меню", function()
@@ -5218,9 +5330,18 @@ local function BuildFontPanel()
             local family = string.sub(string.Trim(f:GetValue()), 1, 64)
             local size = math.floor(s:GetValue())
             CreateMenuFont(family, size)
-            LogFeatureUsage("font.menu.apply", family .. " • " .. tostring(size) .. " px", "success")
+            VisualFeatures.Fonts.Save()
+            LogFeatureUsage("font.menu.apply", Menu_FontFamily .. " • " .. tostring(Menu_FontSize) .. " px", "success")
             dlg:Close()
+            Notify("Шрифт меню применён: " .. Menu_FontFamily)
+            BuildFontPanel()
         end)
+    end)
+    ULXButton(contentPanel, 20, 150, 200, 30, "Сбросить шрифты", function()
+        VisualFeatures.Fonts.Reset()
+        LogFeatureUsage("font.reset", "Calibri • 20 px", "success")
+        Notify("Шрифты сброшены")
+        BuildFontPanel()
     end)
 end
 
@@ -6804,6 +6925,7 @@ local function BuildOopsPanel()
     end
     AddReset("Все настройки", "settings.reset_all", function()
         ESP_Enabled = false; VisualFeatures.ESP.Reset()
+        VisualFeatures.Fonts.Reset()
         ShaderStates = {}; ActiveShaderIndex = 1; ActivateShader(1)
         Physgun_RainbowEnabled = false; QMenu_RainbowEnabled = false; QMenu_CustomColor = nil
         BodyFXConfig.enabled = false
@@ -7331,6 +7453,7 @@ function ToggleMenu()
         btn.DoClick = function()
             surface.PlaySound("buttons/button9.wav")
             builder()
+            VisualFeatures.Fonts.ApplyToPanel(mainFrame)
         end
         y = y + 29
     end
@@ -7345,6 +7468,7 @@ function ToggleMenu()
     end
 
     BuildShadersPanel()
+    VisualFeatures.Fonts.ApplyToPanel(mainFrame)
     LogFeatureUsage("menu.open", SCRIPT_VERSION, "success")
 end
 
