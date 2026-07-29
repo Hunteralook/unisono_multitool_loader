@@ -5451,7 +5451,7 @@ local function BuildNotesPanel()
 
     local function BuildNoteTeleportCommand(pos)
         if not isvector(pos) then return nil end
-        return string.format('!gotovector "%.3f %.3f %.3f"', pos.x, pos.y, pos.z)
+        return string.format("!gotovector \"%.3f %.3f %.3f\"", pos.x, pos.y, pos.z)
     end
 
     local addPanel = vgui.Create("DPanel", contentPanel)
