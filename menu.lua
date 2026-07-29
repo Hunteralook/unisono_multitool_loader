@@ -1,13 +1,13 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.7.10 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.7.11 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist синхронизируется через
 --  GitHub Gist. Служебные данные никогда не отправляются в игровой чат.
 -- Ну ка
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.7.10"
+local SCRIPT_VERSION = "v1.7.11"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -255,11 +255,18 @@ VisualFeatures.Killfeed = {
     recentVictims = {},
 }
 
+VisualFeatures.ESP = {
+    hoveredPlayer = nil,
+    hoverUntil = 0,
+    panelWidth = 330,
+    rowHeight = 26,
+}
+
 local ESP_Enabled = false
 local ESP_MaxDistance = 1100
 local ESP_FontFamily = "Calibri"
-local ESP_FontSize = 30
-local ESPFontName = "ESP_Font_Calibri_30"
+local ESP_FontSize = 20
+local ESPFontName = "ESP_Font_Calibri_20"
 local Menu_FontFamily = "Calibri"
 local Menu_FontSize = 20
 local MenuFontName = "Menu_Font_Calibri_20"
@@ -557,10 +564,12 @@ surface.CreateFont("Notes3D_Font",      { font = "Calibri", size = 20, weight = 
 surface.CreateFont("Notes3D_Font_Small",{ font = "Calibri", size = 15, weight = 600, antialias = true })
 surface.CreateFont("Unisono_Killfeed",  { font = "Tahoma", size = 16, weight = 700, antialias = true, extended = true })
 surface.CreateFont("Unisono_KillfeedPreview", { font = "Tahoma", size = 13, weight = 700, antialias = true, extended = true })
+surface.CreateFont("Unisono_ESPInfo", { font = "Tahoma", size = 18, weight = 500, antialias = true, extended = true })
+surface.CreateFont("Unisono_ESPSub", { font = "Tahoma", size = 14, weight = 500, antialias = true, extended = true })
 
 local function CreateESPFont(family, size)
     ESP_FontFamily = family or "Calibri"
-    ESP_FontSize = size or 30
+    ESP_FontSize = size or 20
     ESPFontName = "ESP_Font_" .. ESP_FontFamily .. "_" .. ESP_FontSize
     surface.CreateFont(ESPFontName, { font = ESP_FontFamily, size = ESP_FontSize, weight = 800, antialias = true })
 end
@@ -576,7 +585,7 @@ CreateMenuFont(Menu_FontFamily, Menu_FontSize)
 
 -- ==================== 3. ЦВЕТА ====================
 local ESP_RoleColors = {
-    assistant = Color(255,255,0), media = Color(0,255,255),
+    user = Color(255,0,0), assistant = Color(255,255,0), media = Color(0,255,255),
     helper = Color(255,255,150), moder_m = Color(255,105,180),
     moder = Color(255,20,147), admin_m = Color(255,100,100),
     admin = Color(255,0,0), admin_s = Color(200,0,0),
@@ -590,13 +599,6 @@ local ESP_RoleColors = {
     spectator = Color(150,150,150), manager_m = Color(255,140,0),
     owner = "rainbow_letters",
 }
-local ESP_Layout = {
-    Nick = { enabled = true, side = "right" },
-    HP = { enabled = true, side = "right" },
-    Armor = { enabled = true, side = "right" },
-    Rank = { enabled = true, side = "bottom" },
-}
-
 -- ==================== 4. ТЕМЫ ULX МЕНЮ ====================
 local CurrentULXTheme = "dark"
 
@@ -683,7 +685,7 @@ local function SafeRemoveHook(ev, name) if name then hook.Remove(ev, name) end e
 local function GetRoleColor(ply)
     local ug = ply:GetUserGroup() or "user"
     local col = ESP_RoleColors[ug]
-    if not col then return Color(0,255,0) end
+    if not col then return Color(255,0,0) end
     if col == "rainbow" then return HSVToColor((CurTime()*100)%360, 1, 1) end
     if col == "rainbow_letters" then return Color(255,215,0) end
     return col
@@ -3061,6 +3063,7 @@ end
 function MultiTool_UnloadSelf(reason)
     SafeRemoveHook("Think", RuntimeHooks.Star)
     SafeRemoveHook("HUDPaint", RuntimeHooks.ESP)
+    SafeRemoveHook("PreDrawHalos", RuntimeHooks.ESP .. "_Halos")
     SafeRemoveHook("RenderScreenspaceEffects", RuntimeHooks.Shader)
     SafeRemoveHook("Think", RuntimeHooks.Key)
     SafeRemoveHook("Think", RuntimeHooks.RGB)
@@ -3146,37 +3149,223 @@ end)
 hook.Add("OnScreenSizeChanged", "Unisono_StarFieldResize", InitStarField)
 
 -- ==================== 9. ESP ====================
-hook.Add("HUDPaint", RuntimeHooks.ESP, function()
-    if not ESP_Enabled then return end
-    if not HasAccess(LocalPlayer():SteamID(), "ESP") then return end
+function VisualFeatures.ESP.HasAccess()
+    local lp = LocalPlayer()
+    if not IsValid(lp) then return false end
+    local steamID = lp:SteamID()
+    -- Keep both permission names working so existing whitelist entries do not
+    -- lose access after replacing the old "!Не работает!" implementation.
+    return HasAccess(steamID, "ESP") or HasAccess(steamID, "NOT_WORKING")
+end
+
+function VisualFeatures.ESP.IsCandidate(ply, lp)
+    if not IsValid(ply) or not ply:IsPlayer() or ply == lp or not ply:Alive() then
+        return false
+    end
+    return lp:GetPos():DistToSqr(ply:GetPos()) <= ESP_MaxDistance * ESP_MaxDistance
+end
+
+function VisualFeatures.ESP.GetHeadPosition(ply)
+    local bone = ply:LookupBone("ValveBiped.Bip01_Head1")
+    if bone then
+        local position = ply:GetBonePosition(bone)
+        if position and position ~= vector_origin then
+            return position + Vector(0, 0, 7)
+        end
+    end
+    return ply:LocalToWorld(Vector(0, 0, ply:OBBMaxs().z + 7))
+end
+
+function VisualFeatures.ESP.GetCursorPosition()
+    if vgui.CursorVisible() then
+        local x, y = gui.MousePos()
+        if x and y and x >= 0 and y >= 0 and x <= ScrW() and y <= ScrH() then
+            return x, y, true
+        end
+    end
+    return ScrW() * 0.5, ScrH() * 0.5, false
+end
+
+function VisualFeatures.ESP.FindHoveredPlayer(lp, cursorX, cursorY, cursorVisible)
+    local trace
+    if cursorVisible then
+        local direction = gui.ScreenToVector(cursorX, cursorY)
+        trace = util.TraceLine({
+            start = lp:EyePos(),
+            endpos = lp:EyePos() + direction * ESP_MaxDistance,
+            filter = lp,
+            mask = MASK_SHOT,
+        })
+    else
+        trace = lp:GetEyeTrace()
+    end
+
+    if trace and VisualFeatures.ESP.IsCandidate(trace.Entity, lp) then
+        return trace.Entity
+    end
+
+    -- Some custom playermodels use unusual collision bounds. Fall back to
+    -- their projected screen rectangle so hovering still behaves naturally.
+    local bestPlayer = nil
+    local bestDistance = math.huge
+    for _, ply in ipairs(player.GetAll()) do
+        if not VisualFeatures.ESP.IsCandidate(ply, lp) then continue end
+        local top = VisualFeatures.ESP.GetHeadPosition(ply):ToScreen()
+        local bottom = ply:LocalToWorld(Vector(0, 0, ply:OBBMins().z)):ToScreen()
+        if not (top.visible or bottom.visible) then continue end
+
+        local height = math.abs(bottom.y - top.y)
+        local halfWidth = math.max(14, height * 0.22)
+        local centerX = (top.x + bottom.x) * 0.5
+        local centerY = (top.y + bottom.y) * 0.5
+        if cursorX >= centerX - halfWidth and cursorX <= centerX + halfWidth
+            and cursorY >= math.min(top.y, bottom.y) - 8
+            and cursorY <= math.max(top.y, bottom.y) + 8 then
+            local distance = (cursorX - centerX) ^ 2 + (cursorY - centerY) ^ 2
+            if distance < bestDistance then
+                bestDistance = distance
+                bestPlayer = ply
+            end
+        end
+    end
+    return bestPlayer
+end
+
+function VisualFeatures.ESP.GetLevel(ply)
+    if isfunction(ply.getDarkRPVar) then
+        for _, key in ipairs({"level", "Level", "lvl", "Lvl"}) do
+            local value = tonumber(ply:getDarkRPVar(key))
+            if value and value ~= 0 then return math.floor(value) end
+        end
+    end
+    for _, key in ipairs({"level", "Level", "lvl", "Lvl", "player_level"}) do
+        local value = ply:GetNW2Int(key, 0)
+        if value == 0 then value = ply:GetNWInt(key, 0) end
+        if value ~= 0 then return value end
+    end
+    return 0
+end
+
+function VisualFeatures.ESP.GetDisplayName(ply)
+    if isfunction(ply.getDarkRPVar) then
+        local rpName = ply:getDarkRPVar("rpname")
+        if isstring(rpName) and rpName ~= "" then return rpName end
+    end
+    for _, key in ipairs({"rpname", "RPName"}) do
+        local rpName = ply:GetNW2String(key, "")
+        if rpName == "" then rpName = ply:GetNWString(key, "") end
+        if rpName ~= "" then return rpName end
+    end
+    return ply:Nick()
+end
+
+function VisualFeatures.ESP.GetRows(ply)
+    local weapon = ply:GetActiveWeapon()
+    local weaponInfo = "Weapon [0][none]"
+    if IsValid(weapon) then
+        weaponInfo = "Weapon [" .. weapon:EntIndex() .. "][" .. tostring(weapon:GetClass()) .. "]"
+    end
+    return {
+        VisualFeatures.ESP.GetDisplayName(ply),
+        tostring(ply:Health()) .. " / " .. tostring(ply:Armor()),
+        "Lvl: " .. tostring(VisualFeatures.ESP.GetLevel(ply)) .. " / " .. tostring(ply:Team()),
+        weaponInfo,
+        ply:SteamID(),
+        tostring(ply:GetModel() or "models/error.mdl"),
+    }
+end
+
+function VisualFeatures.ESP.DrawHoveredPlayer(ply, cursorX, cursorY)
+    local head = VisualFeatures.ESP.GetHeadPosition(ply):ToScreen()
+    if not head.visible then return end
+
+    local color = GetRoleColor(ply)
+    local rows = VisualFeatures.ESP.GetRows(ply)
+    local rowHeight = VisualFeatures.ESP.rowHeight
+    local panelWidth = math.Clamp(ScrW() * 0.29, VisualFeatures.ESP.panelWidth, 440)
+    local panelHeight = #rows * rowHeight
+    local panelX = ScrW() - panelWidth
+    local panelY = math.Clamp(head.y + 12, 20, ScrH() - panelHeight - 20)
+
+    surface.SetDrawColor(color.r, color.g, color.b, 220)
+    surface.DrawLine(cursorX, cursorY, head.x, head.y)
+    surface.DrawRect(panelX, panelY, 3, panelHeight)
+
+    draw.SimpleTextOutlined(
+        VisualFeatures.ESP.GetDisplayName(ply),
+        ESPFontName,
+        head.x,
+        head.y - 31,
+        color,
+        TEXT_ALIGN_CENTER,
+        TEXT_ALIGN_BOTTOM,
+        1,
+        Color(0, 0, 0, 230)
+    )
+    draw.SimpleTextOutlined(
+        tostring(ply:Health()) .. " / " .. tostring(ply:Armor()),
+        "Unisono_ESPSub",
+        head.x,
+        head.y - 10,
+        Color(245, 245, 245),
+        TEXT_ALIGN_CENTER,
+        TEXT_ALIGN_BOTTOM,
+        1,
+        Color(0, 0, 0, 230)
+    )
+
+    for index, text in ipairs(rows) do
+        local rowY = panelY + (index - 1) * rowHeight
+        surface.SetDrawColor(15, 15, 18, index % 2 == 0 and 185 or 205)
+        surface.DrawRect(panelX + 3, rowY, panelWidth - 3, rowHeight - 1)
+        surface.SetDrawColor(215, 215, 220, 125)
+        surface.DrawLine(panelX + 3, rowY + rowHeight - 1, ScrW(), rowY + rowHeight - 1)
+
+        render.SetScissorRect(panelX + 7, rowY, ScrW() - 5, rowY + rowHeight, true)
+        draw.SimpleText(
+            tostring(index) .. " | " .. tostring(text),
+            "Unisono_ESPInfo",
+            panelX + 8,
+            rowY + rowHeight * 0.5,
+            Color(245, 245, 245),
+            TEXT_ALIGN_LEFT,
+            TEXT_ALIGN_CENTER
+        )
+        render.SetScissorRect(0, 0, 0, 0, false)
+    end
+
+    surface.SetDrawColor(255, 255, 255, 230)
+    surface.DrawLine(cursorX - 6, cursorY, cursorX + 6, cursorY)
+    surface.DrawLine(cursorX, cursorY - 6, cursorX, cursorY + 6)
+end
+
+hook.Add("PreDrawHalos", RuntimeHooks.ESP .. "_Halos", function()
+    if not ESP_Enabled or not VisualFeatures.ESP.HasAccess() then return end
     local lp = LocalPlayer()
     if not IsValid(lp) then return end
-    local myPos = lp:GetPos()
+
     for _, ply in ipairs(player.GetAll()) do
-        if ply == lp or not ply:Alive() then continue end
-        local dist = myPos:Distance(ply:GetPos())
-        if dist > ESP_MaxDistance then continue end
-        local top = (ply:GetPos() + Vector(0,0,ply:OBBMaxs().z)):ToScreen()
-        local bottom = (ply:GetPos() + Vector(0,0,ply:OBBMins().z)):ToScreen()
-        if not (top.visible or bottom.visible) then continue end
-        local boxH = bottom.y - top.y
-        local boxW = boxH
-        local boxX, boxY = top.x - boxW/2, top.y
-        cam.IgnoreZ(true)
-        local boxColor = GetRoleColor(ply)
-        surface.SetDrawColor(boxColor.r, boxColor.g, boxColor.b, 180)
-        surface.DrawOutlinedRect(boxX, boxY, boxW, boxH)
-        local texts = { Nick = "Nick: "..ply:Nick(), HP = "HP: "..ply:Health(), Armor = "Armor: "..ply:Armor(), Rank = " "..(ply:GetUserGroup() or "user") }
-        local data = { left = {}, right = {}, top = {}, bottom = {} }
-        for _, key in ipairs({"Nick","HP","Armor","Rank"}) do
-            local cfg = ESP_Layout[key]
-            if cfg.enabled and cfg.side ~= "none" then table.insert(data[cfg.side], { t = texts[key], k = key }) end
-        end
-        local spacing = ESP_FontSize * 0.7
-        if #data.right > 0 then local y = boxY; for _, item in ipairs(data.right) do draw.SimpleText(item.t, ESPFontName, boxX + boxW + 8, y, boxColor, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP); y = y + spacing end end
-        if #data.left > 0 then local y = boxY; for _, item in ipairs(data.left) do draw.SimpleText(item.t, ESPFontName, boxX - 8, y, boxColor, TEXT_ALIGN_RIGHT, TEXT_ALIGN_TOP); y = y + spacing end end
-        if #data.bottom > 0 then local by = boxY + boxH + 8; for _, item in ipairs(data.bottom) do if item.k == "Rank" and (ply:GetUserGroup() or "") == "owner" then DrawRainbowLetters(item.t, ESPFontName, top.x, by, {Color(255,0,0),Color(0,255,0),Color(0,0,255)}) else draw.SimpleText(item.t, ESPFontName, top.x, by, boxColor, TEXT_ALIGN_CENTER, TEXT_ALIGN_TOP) end; by = by + spacing end end
-        cam.IgnoreZ(false)
+        if not VisualFeatures.ESP.IsCandidate(ply, lp) then continue end
+        halo.Add({ply}, GetRoleColor(ply), 1, 1, 1, true, true)
+    end
+end)
+
+hook.Add("HUDPaint", RuntimeHooks.ESP, function()
+    if not ESP_Enabled or not VisualFeatures.ESP.HasAccess() then return end
+    local lp = LocalPlayer()
+    if not IsValid(lp) then return end
+
+    local cursorX, cursorY, cursorVisible = VisualFeatures.ESP.GetCursorPosition()
+    local hoveredPlayer = VisualFeatures.ESP.FindHoveredPlayer(lp, cursorX, cursorY, cursorVisible)
+    if IsValid(hoveredPlayer) then
+        VisualFeatures.ESP.hoveredPlayer = hoveredPlayer
+        VisualFeatures.ESP.hoverUntil = CurTime() + 0.12
+    elseif CurTime() > VisualFeatures.ESP.hoverUntil then
+        VisualFeatures.ESP.hoveredPlayer = nil
+    end
+
+    if IsValid(VisualFeatures.ESP.hoveredPlayer) then
+        VisualFeatures.ESP.DrawHoveredPlayer(VisualFeatures.ESP.hoveredPlayer, cursorX, cursorY)
     end
 end)
 
@@ -5706,7 +5895,7 @@ BuildWhitelistAdminPanel = function(parent)
         NOTES = "3D Заметки",
         STATS = "Статистика",
         BODY_FX = "Эффекты тела",
-        NOT_WORKING = "!Не работает!",
+        NOT_WORKING = "ESP игроков (обводка)",
     }
     local permissionBoxes = {}
     local permissionWidth = math.floor(innerWidth / #permissionOrder)
@@ -6550,13 +6739,13 @@ local function BuildThemesPanel()
     ULXLabel(contentPanel, 20, y+10, "Тема применяется ко всему интерфейсу мульти-тула.", ThemeCol("text"))
 end
 
--- 15.16 ESP (!Не работает!)
+-- 15.16 ESP игроков
 local function BuildESPPanel()
     ClearContent()
-    if not HasAccess(LocalPlayer():SteamID(), "NOT_WORKING") then
-        ULXLabel(contentPanel, 20, 20, "Нет доступа к '!Не работает!'!", Color(200,50,50)) return
+    if not VisualFeatures.ESP.HasAccess() then
+        ULXLabel(contentPanel, 20, 20, "Нет доступа к ESP игроков!", Color(200,50,50)) return
     end
-    ULXLabel(contentPanel, 20, 20, "ESP / Wallhack")
+    ULXLabel(contentPanel, 20, 20, "ESP игроков / наведение")
     local btnToggle = ULXButton(contentPanel, 20, 60, 200, 28, "Вкл / Выкл ESP", function()
         ESP_Enabled = not ESP_Enabled
         LogFeatureUsage("esp.toggle", ESP_Enabled and "Включён" or "Выключен", "success")
@@ -6601,25 +6790,8 @@ local function BuildESPPanel()
             end
         end
     end)
-    ULXButton(contentPanel, 20, 180, 200, 28, "Редактор бокса", function()
-        local dlg = vgui.Create("DFrame") dlg:SetSize(350,220) dlg:Center() dlg:SetTitle("Редактор бокса ESP") dlg:MakePopup()
-        local yOff = 30
-        for _, elem in ipairs({"Nick","HP","Armor","Rank"}) do
-            ULXLabel(dlg, 20, yOff, elem..":")
-            local combo = vgui.Create("DComboBox", dlg)
-            combo:SetPos(120,yOff) combo:SetSize(150,22)
-            combo:SetValue(ESP_Layout[elem].side)
-            combo:AddChoice("Слева","left") combo:AddChoice("Справа","right")
-            combo:AddChoice("Сверху","top") combo:AddChoice("Снизу","bottom")
-            combo:AddChoice("Отключено","none")
-            combo.OnSelect = function(p,idx,val,data)
-                ESP_Layout[elem].side = data
-                ESP_Layout[elem].enabled = (data ~= "none")
-                LogFeatureUsage("esp.layout", elem .. "=" .. tostring(data), "success")
-            end
-            yOff = yOff + 40
-        end
-    end)
+    ULXLabel(contentPanel, 20, 185, "Обводка видна постоянно. Наведи прицел или курсор", ThemeCol("text"))
+    ULXLabel(contentPanel, 20, 207, "на игрока — появятся ник и правая инфопанель.", ThemeCol("text"))
 end
 
 -- 15.17 ИССЛЕДОВАТЕЛЬ СЕРВЕРА
@@ -6985,7 +7157,7 @@ function ToggleMenu()
     end
 
     local categories = {
-        {"!Не работает!",  BuildESPPanel},
+        {"ESP игроков",     BuildESPPanel},
         {"Шейдеры",        BuildShadersPanel},
         {"Мир",             BuildWorldPanel},
         {"Настройки шрифта", BuildFontPanel},
