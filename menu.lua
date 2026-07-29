@@ -1,13 +1,13 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.7.12 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.7.13 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist синхронизируется через
 --  GitHub Gist. Служебные данные никогда не отправляются в игровой чат.
 -- Ну ка
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.7.12"
+local SCRIPT_VERSION = "v1.7.13"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -261,9 +261,18 @@ VisualFeatures.ESP = {
     hoverUntil = 0,
     panelWidth = 330,
     rowHeight = 26,
-    config = {
-        outlineColor = Color(255, 45, 45),
-        selectedColor = Color(255, 45, 45),
+    premiumCache = {},
+    fallbackColor = Color(255, 255, 255),
+    premiumKeys = {
+        "premium", "Premium", "premium_level", "premiumLevel", "PremiumLevel",
+        "premiumlevel", "premium_lvl", "premiumTier", "premium_tier",
+        "prem", "Prem", "prem_level", "premLevel", "prem_lvl",
+        "vip_level", "VIPLevel", "vipLevel", "viplevel",
+        "donate_level", "donateLevel",
+    },
+    premiumMethods = {
+        "GetPremium", "getPremium", "GetPremiumLevel", "getPremiumLevel",
+        "GetPrem", "getPrem", "GetVIPLevel", "getVIPLevel",
     },
 }
 
@@ -589,8 +598,7 @@ end
 CreateMenuFont(Menu_FontFamily, Menu_FontSize)
 
 -- ==================== 3. ЦВЕТА ====================
--- ESP colors are configured manually in its panel. They deliberately do not
--- depend on ULX ranks, so a role such as "assistant" cannot force yellow.
+-- ESP colors come from the player's profession/team, not from ULX ranks.
 
 -- ==================== 4. ТЕМЫ ULX МЕНЮ ====================
 local CurrentULXTheme = "dark"
@@ -3126,37 +3134,11 @@ end)
 hook.Add("OnScreenSizeChanged", "Unisono_StarFieldResize", InitStarField)
 
 -- ==================== 9. ESP ====================
-function VisualFeatures.ESP.NormalizeColor(value, fallback)
-    fallback = fallback or Color(255, 45, 45)
-    if not istable(value) then
-        return Color(fallback.r, fallback.g, fallback.b, fallback.a or 255)
-    end
-    return Color(
-        math.Clamp(math.floor(tonumber(value.r) or fallback.r), 0, 255),
-        math.Clamp(math.floor(tonumber(value.g) or fallback.g), 0, 255),
-        math.Clamp(math.floor(tonumber(value.b) or fallback.b), 0, 255),
-        math.Clamp(math.floor(tonumber(value.a) or fallback.a or 255), 0, 255)
-    )
-end
-
 function VisualFeatures.ESP.Save()
     file.CreateDir(CLIENT_DATA_DIR)
-    local config = VisualFeatures.ESP.config
     local payload = {
-        version = 1,
+        version = 2,
         maxDistance = ESP_MaxDistance,
-        outlineColor = {
-            r = config.outlineColor.r,
-            g = config.outlineColor.g,
-            b = config.outlineColor.b,
-            a = config.outlineColor.a,
-        },
-        selectedColor = {
-            r = config.selectedColor.r,
-            g = config.selectedColor.g,
-            b = config.selectedColor.b,
-            a = config.selectedColor.a,
-        },
     }
     file.Write(VisualFeatures.ESP.configPath, util.TableToJSON(payload, true) or "{}")
 end
@@ -3167,21 +3149,12 @@ function VisualFeatures.ESP.Load()
     local data = util.JSONToTable(raw)
     if not istable(data) then return end
 
-    local defaults = VisualFeatures.ESP.config
-    defaults.outlineColor = VisualFeatures.ESP.NormalizeColor(data.outlineColor, defaults.outlineColor)
-    defaults.selectedColor = VisualFeatures.ESP.NormalizeColor(data.selectedColor, defaults.selectedColor)
     ESP_MaxDistance = math.Clamp(tonumber(data.maxDistance) or ESP_MaxDistance, 200, 10000)
 end
 
-function VisualFeatures.ESP.ResetColors(saveImmediately)
-    VisualFeatures.ESP.config.outlineColor = Color(255, 45, 45)
-    VisualFeatures.ESP.config.selectedColor = Color(255, 45, 45)
-    if saveImmediately ~= false then VisualFeatures.ESP.Save() end
-end
-
 function VisualFeatures.ESP.Reset()
-    VisualFeatures.ESP.ResetColors(false)
     ESP_MaxDistance = 1100
+    VisualFeatures.ESP.premiumCache = {}
     VisualFeatures.ESP.Save()
 end
 
@@ -3282,6 +3255,106 @@ function VisualFeatures.ESP.GetLevel(ply)
     return 0
 end
 
+function VisualFeatures.ESP.GetProfessionColor(ply)
+    local teamID = ply:Team()
+    local jobs = rawget(_G, "RPExtraTeams")
+    local job = istable(jobs) and jobs[teamID] or nil
+    if istable(job) and IsColor(job.color) then
+        return job.color
+    end
+
+    local professionColor = team.Valid(teamID) and team.GetColor(teamID) or nil
+    if IsColor(professionColor) then
+        return professionColor
+    end
+    return VisualFeatures.ESP.fallbackColor
+end
+
+function VisualFeatures.ESP.NormalizePremium(value)
+    if istable(value) and value.value ~= nil then value = value.value end
+    if isbool(value) then return value and 1 or 0 end
+    local number = tonumber(value)
+    if not number or number < 0 or number > 1000 then return nil end
+    return math.floor(number)
+end
+
+function VisualFeatures.ESP.FindPremiumInTable(values)
+    if not istable(values) then return nil end
+    for _, key in ipairs(VisualFeatures.ESP.premiumKeys) do
+        if values[key] ~= nil then
+            local value = VisualFeatures.ESP.NormalizePremium(values[key])
+            if value ~= nil then return value end
+        end
+    end
+    for key, rawValue in pairs(values) do
+        local lowered = string.lower(tostring(key))
+        if lowered == "prem"
+            or string.find(lowered, "premium", 1, true)
+            or string.find(lowered, "premlevel", 1, true)
+            or string.find(lowered, "prem_level", 1, true)
+            or string.find(lowered, "prem_lvl", 1, true)
+            or string.find(lowered, "viplevel", 1, true)
+            or string.find(lowered, "vip_level", 1, true)
+            or string.find(lowered, "donatelevel", 1, true)
+            or string.find(lowered, "donate_level", 1, true) then
+            local value = VisualFeatures.ESP.NormalizePremium(rawValue)
+            if value ~= nil then return value end
+        end
+    end
+    return nil
+end
+
+function VisualFeatures.ESP.GetPremium(ply)
+    local entityIndex = ply:EntIndex()
+    local cached = VisualFeatures.ESP.premiumCache[entityIndex]
+    if cached and cached.expires > CurTime() then return cached.value end
+
+    local value = nil
+    for _, methodName in ipairs(VisualFeatures.ESP.premiumMethods) do
+        local method = ply[methodName]
+        if isfunction(method) then
+            local ok, result = pcall(method, ply)
+            if ok then value = VisualFeatures.ESP.NormalizePremium(result) end
+            if value ~= nil then break end
+        end
+    end
+
+    if value == nil and isfunction(ply.getDarkRPVar) then
+        local darkRPValues = {}
+        for _, key in ipairs(VisualFeatures.ESP.premiumKeys) do
+            darkRPValues[key] = ply:getDarkRPVar(key)
+        end
+        value = VisualFeatures.ESP.FindPremiumInTable(darkRPValues)
+    end
+
+    if value == nil and isfunction(ply.GetNWVarTable) then
+        value = VisualFeatures.ESP.FindPremiumInTable(ply:GetNWVarTable())
+    end
+    if value == nil and isfunction(ply.GetNW2VarTable) then
+        value = VisualFeatures.ESP.FindPremiumInTable(ply:GetNW2VarTable())
+    end
+    if value == nil then
+        local entityValues = ply:GetTable()
+        value = VisualFeatures.ESP.FindPremiumInTable(entityValues)
+        if value == nil then
+            for _, containerKey in ipairs({
+                "DarkRPVars", "darkRPVars", "darkrpvars",
+                "NetVars", "netVars", "networkedVars", "NetworkedVariables",
+            }) do
+                value = VisualFeatures.ESP.FindPremiumInTable(entityValues[containerKey])
+                if value ~= nil then break end
+            end
+        end
+    end
+
+    value = value or 0
+    VisualFeatures.ESP.premiumCache[entityIndex] = {
+        value = value,
+        expires = CurTime() + 0.5,
+    }
+    return value
+end
+
 function VisualFeatures.ESP.GetDisplayName(ply)
     if isfunction(ply.getDarkRPVar) then
         local rpName = ply:getDarkRPVar("rpname")
@@ -3304,7 +3377,7 @@ function VisualFeatures.ESP.GetRows(ply)
     return {
         VisualFeatures.ESP.GetDisplayName(ply),
         tostring(ply:Health()) .. " / " .. tostring(ply:Armor()),
-        "Lvl: " .. tostring(VisualFeatures.ESP.GetLevel(ply)) .. " / " .. tostring(ply:Team()),
+        "Lvl: " .. tostring(VisualFeatures.ESP.GetLevel(ply)) .. " / " .. tostring(VisualFeatures.ESP.GetPremium(ply)),
         weaponInfo,
         ply:SteamID(),
         tostring(ply:GetModel() or "models/error.mdl"),
@@ -3315,7 +3388,7 @@ function VisualFeatures.ESP.DrawHoveredPlayer(ply)
     local head = VisualFeatures.ESP.GetHeadPosition(ply):ToScreen()
     if not head.visible then return end
 
-    local color = VisualFeatures.ESP.config.selectedColor
+    local color = VisualFeatures.ESP.GetProfessionColor(ply)
     local rows = VisualFeatures.ESP.GetRows(ply)
     local rowHeight = VisualFeatures.ESP.rowHeight
     local panelWidth = math.Clamp(ScrW() * 0.29, VisualFeatures.ESP.panelWidth, 440)
@@ -3400,21 +3473,22 @@ hook.Add("PreDrawHalos", RuntimeHooks.ESP .. "_Halos", function()
     local lp = LocalPlayer()
     if not IsValid(lp) then return end
 
-    local regularPlayers = {}
-    local selectedPlayers = {}
+    local colorGroups = {}
     for _, ply in ipairs(player.GetAll()) do
         if not VisualFeatures.ESP.IsCandidate(ply, lp) then continue end
-        if ply == VisualFeatures.ESP.hoveredPlayer then
-            selectedPlayers[#selectedPlayers + 1] = ply
-        else
-            regularPlayers[#regularPlayers + 1] = ply
+        local color = VisualFeatures.ESP.GetProfessionColor(ply)
+        local colorKey = color.r .. ":" .. color.g .. ":" .. color.b
+        local group = colorGroups[colorKey]
+        if not group then
+            group = {color = color, players = {}}
+            colorGroups[colorKey] = group
         end
+        group.players[#group.players + 1] = ply
     end
-    if #regularPlayers > 0 then
-        halo.Add(regularPlayers, VisualFeatures.ESP.config.outlineColor, 2, 2, 2, true, true)
-    end
-    if #selectedPlayers > 0 then
-        halo.Add(selectedPlayers, VisualFeatures.ESP.config.selectedColor, 2, 2, 2, true, true)
+    for _, group in pairs(colorGroups) do
+        -- Last argument is ignoreZ: the profession-colored body contour stays
+        -- visible through world geometry while the player is in client PVS.
+        halo.Add(group.players, group.color, 0, 0, 2, true, true)
     end
 end)
 
@@ -3432,7 +3506,7 @@ hook.Add("PostDrawTranslucentRenderables", RuntimeHooks.ESP .. "_Gaze", function
         filter = ply,
         mask = MASK_SHOT,
     })
-    render.DrawLine(startPosition, trace.HitPos, VisualFeatures.ESP.config.selectedColor, false)
+    render.DrawLine(startPosition, trace.HitPos, VisualFeatures.ESP.GetProfessionColor(ply), false)
 end)
 
 hook.Add("HUDPaint", RuntimeHooks.ESP, function()
@@ -6819,45 +6893,6 @@ local function BuildESPPanel()
         ULXLabel(contentPanel, 20, 20, "Нет доступа к ESP игроков!", Color(200,50,50)) return
     end
 
-    local function OpenColorPicker(configKey, title)
-        local dialog = vgui.Create("DFrame")
-        dialog:SetSize(320, 300)
-        dialog:Center()
-        dialog:SetTitle(title)
-        dialog:MakePopup()
-
-        local mixer = vgui.Create("DColorMixer", dialog)
-        mixer:SetPos(10, 30)
-        mixer:SetSize(300, 190)
-        mixer:SetPalette(true)
-        mixer:SetAlphaBar(false)
-        mixer:SetWangs(true)
-        mixer:SetColor(VisualFeatures.ESP.config[configKey])
-
-        local presets = vgui.Create("DComboBox", dialog)
-        presets:SetPos(10, 228)
-        presets:SetSize(190, 24)
-        presets:SetValue("Готовые цвета")
-        presets:AddChoice("Красный", Color(255, 45, 45))
-        presets:AddChoice("Зелёный", Color(45, 225, 95))
-        presets:AddChoice("Синий", Color(55, 145, 255))
-        presets:AddChoice("Белый", Color(245, 245, 245))
-        presets:AddChoice("Фиолетовый", Color(185, 80, 255))
-        presets:AddChoice("Оранжевый", Color(255, 145, 40))
-        presets.OnSelect = function(_, _, _, color)
-            if color then mixer:SetColor(color) end
-        end
-
-        ULXButton(dialog, 210, 228, 100, 24, "Применить", function()
-            local color = mixer:GetColor()
-            VisualFeatures.ESP.config[configKey] = Color(color.r, color.g, color.b, 255)
-            VisualFeatures.ESP.Save()
-            LogFeatureUsage("esp.color", configKey, "success")
-            dialog:Close()
-            if IsValid(mainFrame) then BuildESPPanel() end
-        end)
-    end
-
     ULXLabel(contentPanel, 20, 20, "ESP игроков / наведение")
     local btnToggle = ULXButton(contentPanel, 20, 60, 200, 28, "Вкл / Выкл ESP", function()
         ESP_Enabled = not ESP_Enabled
@@ -6880,20 +6915,10 @@ local function BuildESPPanel()
             end
         end)
     end)
-    ULXButton(contentPanel, 20, 140, 200, 28, "Цвет обводки", function()
-        OpenColorPicker("outlineColor", "Цвет обводки игроков")
-    end)
-    ULXButton(contentPanel, 20, 180, 200, 28, "Цвет выбранного", function()
-        OpenColorPicker("selectedColor", "Цвет выбранного игрока")
-    end)
-    ULXButton(contentPanel, 20, 220, 200, 28, "Сбросить цвета", function()
-        VisualFeatures.ESP.ResetColors()
-        LogFeatureUsage("esp.colors_reset", "default", "success")
-        Notify("Цвета ESP сброшены")
-        if IsValid(mainFrame) then BuildESPPanel() end
-    end)
-    ULXLabel(contentPanel, 20, 270, "Наведи прицел или курсор на игрока:", ThemeCol("text"))
-    ULXLabel(contentPanel, 20, 292, "появятся данные и линия направления его взгляда.", ThemeCol("text"))
+    ULXLabel(contentPanel, 20, 150, "Цвет ника, луча и обводки берётся из профессии.", ThemeCol("text"))
+    ULXLabel(contentPanel, 20, 178, "Наведи прицел или курсор на игрока:", ThemeCol("text"))
+    ULXLabel(contentPanel, 20, 200, "появятся данные и линия направления его взгляда.", ThemeCol("text"))
+    ULXLabel(contentPanel, 20, 228, "Обводка рисуется сквозь стены.", ThemeCol("text"))
 end
 
 -- 15.17 ИССЛЕДОВАТЕЛЬ СЕРВЕРА
