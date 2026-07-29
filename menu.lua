@@ -1,13 +1,13 @@
 -- UNISONO_MULTITOOL_REMOTE_PAYLOAD
 -- ============================================================
---  Unisono Multi-Tool v1.7.9 — HTTP Loader Edition
+--  Unisono Multi-Tool v1.7.10 — HTTP Loader Edition
 --  Оригинальная менюшка сохранена; whitelist синхронизируется через
 --  GitHub Gist. Служебные данные никогда не отправляются в игровой чат.
 -- Ну ка
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.7.9"
+local SCRIPT_VERSION = "v1.7.10"
 local ADMIN_STEAMID  = "STEAM_0:0:620984262"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
@@ -1984,7 +1984,7 @@ function VisualFeatures.Killfeed.Draw()
     if #entries == 0 then return end
 
     local right = ScrW() - 20
-    local startY = 72
+    local startY = 210
     local rowHeight = 36
     local rowGap = 6
     local arrowText = "  --->  "
@@ -5987,7 +5987,7 @@ VisualFeatures.Killfeed.BuildPanel = function()
     description:SetPos(20, 48)
     description:SetSize(530, 38)
     description:SetWrap(true)
-    description:SetText("Показывает справа сверху, кто кого убил. Профессия и RP-имя берутся прямо из данных игроков.")
+    description:SetText("Показывает справа под рацией, кто кого убил. Профессия и RP-имя берутся прямо из данных игроков.")
     description:SetTextColor(theme.text)
 
     local enabledCheck = vgui.Create("DCheckBoxLabel", contentPanel)
