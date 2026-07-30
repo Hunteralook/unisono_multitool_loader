@@ -222,7 +222,7 @@ VisualFeatures.PlayerTrail = {
             material = Material("particle/particle_smokegrenade"),
             color = Color(150, 155, 165),
         },
-        footsteps = {name = "Светящиеся шаги", material = Material("sprites/light_glow02_add")},
+        footsteps = {name = "Светящиеся лапки", material = Material("sprites/light_glow02_add")},
     },
     order = {"fire", "ice", "lightning", "rainbow", "smoke", "footsteps"},
     points = {},
@@ -237,6 +237,25 @@ VisualFeatures.PlayerTrail = {
     coreMaterial = Material("sprites/physbeam"),
     glowMaterial = Material("sprites/light_glow02_add"),
 }
+
+VisualFeatures.PlayerTrail.pawTexture = GetRenderTarget(
+    "UnisonoMT_PlayerTrailPaw",
+    128,
+    128
+)
+VisualFeatures.PlayerTrail.pawMaterial = CreateMaterial(
+    "UnisonoMT_PlayerTrailPawMaterial",
+    "UnlitGeneric",
+    {
+        ["$basetexture"] = VisualFeatures.PlayerTrail.pawTexture:GetName(),
+        ["$translucent"] = "1",
+        ["$vertexcolor"] = "1",
+        ["$vertexalpha"] = "1",
+        ["$nocull"] = "1",
+    }
+)
+VisualFeatures.PlayerTrail.pawTextureReady = false
+VisualFeatures.PlayerTrail.pawTextureErrorShown = false
 
 VisualFeatures.Killfeed = {
     configPath = CLIENT_DATA_DIR .. "/killfeed.json",
@@ -1910,6 +1929,81 @@ function VisualFeatures.PlayerTrail.GetRenderPosition(point, styleKey, now, inde
     return position, 1 - progress, progress
 end
 
+function VisualFeatures.PlayerTrail.DrawPawEllipse(centerX, centerY, radiusX, radiusY, rotation)
+    local vertices = {}
+    local radians = math.rad(rotation or 0)
+    local cosine = math.cos(radians)
+    local sine = math.sin(radians)
+
+    for index = 0, 31 do
+        local angle = math.rad(index * 360 / 32)
+        local offsetX = math.cos(angle) * radiusX
+        local offsetY = math.sin(angle) * radiusY
+        vertices[#vertices + 1] = {
+            x = centerX + offsetX * cosine - offsetY * sine,
+            y = centerY + offsetX * sine + offsetY * cosine,
+        }
+    end
+
+    surface.DrawPoly(vertices)
+end
+
+function VisualFeatures.PlayerTrail.BuildPawTexture()
+    if VisualFeatures.PlayerTrail.pawTextureReady then return true end
+
+    local renderTargetPushed = false
+    local inside2D = false
+    local success, message = xpcall(function()
+        render.PushRenderTarget(VisualFeatures.PlayerTrail.pawTexture)
+        renderTargetPushed = true
+        render.Clear(0, 0, 0, 0, true, true)
+
+        cam.Start2D()
+        inside2D = true
+        draw.NoTexture()
+        surface.SetDrawColor(255, 255, 255, 255)
+
+        -- Four toe pads.
+        VisualFeatures.PlayerTrail.DrawPawEllipse(27, 38, 11, 18, -20)
+        VisualFeatures.PlayerTrail.DrawPawEllipse(51, 27, 12, 19, -6)
+        VisualFeatures.PlayerTrail.DrawPawEllipse(77, 27, 12, 19, 6)
+        VisualFeatures.PlayerTrail.DrawPawEllipse(101, 38, 11, 18, 20)
+
+        -- Large central pad, shaped like the supplied paw reference.
+        surface.DrawPoly({
+            {x = 64, y = 51},
+            {x = 78, y = 57},
+            {x = 92, y = 72},
+            {x = 100, y = 88},
+            {x = 98, y = 101},
+            {x = 88, y = 111},
+            {x = 72, y = 113},
+            {x = 57, y = 109},
+            {x = 42, y = 113},
+            {x = 28, y = 108},
+            {x = 21, y = 96},
+            {x = 22, y = 82},
+            {x = 31, y = 68},
+            {x = 48, y = 54},
+        })
+
+        cam.End2D()
+        inside2D = false
+        render.PopRenderTarget()
+        renderTargetPushed = false
+    end, debug.traceback)
+
+    if inside2D then pcall(cam.End2D) end
+    if renderTargetPushed then pcall(render.PopRenderTarget) end
+
+    VisualFeatures.PlayerTrail.pawTextureReady = success
+    if not success and not VisualFeatures.PlayerTrail.pawTextureErrorShown then
+        VisualFeatures.PlayerTrail.pawTextureErrorShown = true
+        ErrorNoHalt("[Unisono] Paw texture render error: " .. tostring(message) .. "\n")
+    end
+    return success
+end
+
 function VisualFeatures.PlayerTrail.Draw()
     local lp = LocalPlayer()
     local cfg = VisualFeatures.PlayerTrail.config
@@ -1927,17 +2021,21 @@ function VisualFeatures.PlayerTrail.Draw()
     if cfg.throughWalls then cam.IgnoreZ(true) end
 
     if cfg.style == "footsteps" then
-        render.SetMaterial(style.material)
+        if not VisualFeatures.PlayerTrail.BuildPawTexture() then
+            if cfg.throughWalls then cam.IgnoreZ(false) end
+            return
+        end
+        render.SetMaterial(VisualFeatures.PlayerTrail.pawMaterial)
         local lifetime = math.max(tonumber(cfg.lifetime) or 1.4, 0.01)
         for index, footprint in ipairs(VisualFeatures.PlayerTrail.footprints) do
             local fade = 1 - math.Clamp((now - footprint.time) / lifetime, 0, 1)
             local color = VisualFeatures.PlayerTrail.GetColor("footsteps", index, now)
-            local rotation = footprint.forward:Angle().y
+            local rotation = footprint.forward:Angle().y + footprint.side * 6
             render.DrawQuadEasy(
                 footprint.pos,
                 footprint.normal,
-                width * 0.72 * widthScale,
-                width * 1.55 * widthScale,
+                width * 1.15 * widthScale,
+                width * 1.42 * widthScale,
                 Color(color.r, color.g, color.b, math.Clamp(math.floor(220 * fade * intensity), 0, 255)),
                 rotation
             )
@@ -3610,21 +3708,77 @@ function VisualFeatures.ESP.BuildOutlineGroups(lp)
     return groups
 end
 
+function VisualFeatures.ESP.HaloRenderOverride(ply, flags)
+    render.MaterialOverride(VisualFeatures.ESP.outlineMaskMaterial)
+    ply:DrawModel(flags or STUDIO_RENDER)
+    render.MaterialOverride(nil)
+end
+
+function VisualFeatures.ESP.RestoreHaloPlayers(states)
+    render.MaterialOverride(nil)
+    for _, state in ipairs(states or {}) do
+        local ply = state.player
+        if IsValid(ply) then
+            ply.RenderOverride = state.renderOverride
+            ply:SetMaterial(state.material)
+            ply:SetRenderMode(state.renderMode)
+            ply:SetColor(state.color)
+            ply:SetNoDraw(state.noDraw)
+        end
+    end
+end
+
+function VisualFeatures.ESP.ForceHaloPlayers(players)
+    local states = {}
+    for _, ply in ipairs(players or {}) do
+        if IsValid(ply) then
+            local color = ply:GetColor()
+            states[#states + 1] = {
+                player = ply,
+                noDraw = ply:GetNoDraw(),
+                color = Color(color.r, color.g, color.b, color.a),
+                renderMode = ply:GetRenderMode(),
+                material = ply:GetMaterial() or "",
+                renderOverride = ply.RenderOverride,
+            }
+
+            -- Cloaking systems commonly combine NoDraw, transparent render
+            -- modes, zero alpha and PrePlayerDraw suppression. Override all of
+            -- them only while halo.Render builds its off-screen mask.
+            ply:SetNoDraw(false)
+            ply:SetMaterial("")
+            ply:SetRenderMode(RENDERMODE_NORMAL)
+            ply:SetColor(Color(color.r, color.g, color.b, 255))
+            ply.RenderOverride = VisualFeatures.ESP.HaloRenderOverride
+        end
+    end
+    return states
+end
+
 function VisualFeatures.ESP.DrawDirectHalos(groups)
     if not istable(groups) or #groups == 0 then return end
     if not halo or not isfunction(halo.Render) then return end
 
     for _, group in ipairs(groups) do
         if istable(group.players) and #group.players > 0 then
-            halo.Render({
-                Ents = group.players,
-                Color = group.color,
-                BlurX = 1,
-                BlurY = 1,
-                DrawPasses = 2,
-                Additive = true,
-                IgnoreZ = true,
-            })
+            local states = VisualFeatures.ESP.ForceHaloPlayers(group.players)
+            local success, message = xpcall(function()
+                halo.Render({
+                    Ents = group.players,
+                    Color = group.color,
+                    BlurX = 1,
+                    BlurY = 1,
+                    DrawPasses = 2,
+                    Additive = true,
+                    IgnoreZ = true,
+                })
+            end, debug.traceback)
+            VisualFeatures.ESP.RestoreHaloPlayers(states)
+
+            if not success and not VisualFeatures.ESP.outlineErrorShown then
+                VisualFeatures.ESP.outlineErrorShown = true
+                ErrorNoHalt("[Unisono] ESP outline render error: " .. tostring(message) .. "\n")
+            end
         end
     end
 end
@@ -6296,7 +6450,7 @@ BuildPlayerTrailPanel = function()
     hint:SetWrap(true)
     hint:SetText(
         "Огонь, лёд, молнии, радуга и дым повторяют путь игрока. "
-        .. "Светящиеся шаги ставятся попеременно на землю."
+        .. "Светящиеся лапки ставятся попеременно на землю."
     )
     hint:SetTextColor(Color(165, 180, 205))
     scroll:GetCanvas():SetTall(470)
