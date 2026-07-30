@@ -3610,81 +3610,22 @@ function VisualFeatures.ESP.BuildOutlineGroups(lp)
     return groups
 end
 
-function VisualFeatures.ESP.DrawModelOutlines(groups)
+function VisualFeatures.ESP.DrawDirectHalos(groups)
     if not istable(groups) or #groups == 0 then return end
-
-    local previousBlend = render.GetBlend()
-    local previousRed, previousGreen, previousBlue = render.GetColorModulation()
-    local scaleMatrix = Matrix()
-    scaleMatrix:Scale(Vector(1.025, 1.025, 1.025))
-
-    local success, message = xpcall(function()
-        render.ClearStencil()
-        render.SetStencilEnable(true)
-        render.SetStencilWriteMask(0xFF)
-        render.SetStencilTestMask(0xFF)
-        render.SetStencilReferenceValue(1)
-        render.SetStencilCompareFunction(STENCIL_ALWAYS)
-        render.SetStencilFailOperation(STENCIL_KEEP)
-        render.SetStencilPassOperation(STENCIL_REPLACE)
-        render.SetStencilZFailOperation(STENCIL_REPLACE)
-
-        -- Record complete player silhouettes without touching the framebuffer.
-        render.OverrideColorWriteEnable(true, false)
-        render.OverrideAlphaWriteEnable(true, false)
-        render.OverrideDepthEnable(true, false)
-        render.MaterialOverride(VisualFeatures.ESP.outlineMaskMaterial)
-        render.SetBlend(1)
-        for _, group in ipairs(groups) do
-            for _, ply in ipairs(group.players) do
-                if IsValid(ply) then
-                    ply:DrawModel()
-                end
-            end
-        end
-
-        -- Draw a slightly enlarged model only outside the recorded silhouette.
-        -- The mask material ignores depth, so this remains visible through walls.
-        render.OverrideColorWriteEnable(false, false)
-        render.OverrideAlphaWriteEnable(false, false)
-        render.SetStencilCompareFunction(STENCIL_NOTEQUAL)
-        render.SetStencilFailOperation(STENCIL_KEEP)
-        render.SetStencilPassOperation(STENCIL_KEEP)
-        render.SetStencilZFailOperation(STENCIL_KEEP)
-
-        for _, group in ipairs(groups) do
-            render.SetColorModulation(
-                group.color.r / 255,
-                group.color.g / 255,
-                group.color.b / 255
-            )
-            for _, ply in ipairs(group.players) do
-                if IsValid(ply) then
-                    ply:EnableMatrix("RenderMultiply", scaleMatrix)
-                    ply:DrawModel()
-                    ply:DisableMatrix("RenderMultiply")
-                end
-            end
-        end
-    end, debug.traceback)
+    if not halo or not isfunction(halo.Render) then return end
 
     for _, group in ipairs(groups) do
-        for _, ply in ipairs(group.players) do
-            if IsValid(ply) then
-                ply:DisableMatrix("RenderMultiply")
-            end
+        if istable(group.players) and #group.players > 0 then
+            halo.Render({
+                Ents = group.players,
+                Color = group.color,
+                BlurX = 1,
+                BlurY = 1,
+                DrawPasses = 2,
+                Additive = true,
+                IgnoreZ = true,
+            })
         end
-    end
-    VisualFeatures.ESP.ResetOutlineRenderState(
-        previousBlend,
-        previousRed,
-        previousGreen,
-        previousBlue
-    )
-
-    if not success and not VisualFeatures.ESP.outlineErrorShown then
-        VisualFeatures.ESP.outlineErrorShown = true
-        ErrorNoHalt("[Unisono] ESP outline render error: " .. tostring(message) .. "\n")
     end
 end
 
@@ -4067,12 +4008,12 @@ VisualFeatures.ESP.Load()
 
 hook.Add("Think", RuntimeHooks.ESP .. "_Hover", VisualFeatures.ESP.UpdateHoveredPlayer)
 
-hook.Add("PostDrawTranslucentRenderables", RuntimeHooks.ESP .. "_Outline", function(_, drawingSkybox)
-    if drawingSkybox or not ESP_Enabled or not VisualFeatures.ESP.HasAccess() then return end
+hook.Add("PostDrawTranslucentRenderables", RuntimeHooks.ESP .. "_Outline", function(drawingDepth, drawingSkybox)
+    if drawingDepth or drawingSkybox or not ESP_Enabled or not VisualFeatures.ESP.HasAccess() then return end
     local lp = LocalPlayer()
     if not IsValid(lp) then return end
 
-    VisualFeatures.ESP.DrawModelOutlines(VisualFeatures.ESP.BuildOutlineGroups(lp))
+    VisualFeatures.ESP.DrawDirectHalos(VisualFeatures.ESP.BuildOutlineGroups(lp))
 end)
 
 hook.Add("PostDrawTranslucentRenderables", RuntimeHooks.ESP .. "_Gaze", function(_, drawingSkybox)
