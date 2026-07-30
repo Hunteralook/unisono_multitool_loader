@@ -263,6 +263,15 @@ VisualFeatures.Fonts = {
     defaultMenuSize = 20,
 }
 
+VisualFeatures.Notes3D = {
+    configPath = CLIENT_DATA_DIR .. "/map_notes.json",
+    backupPath = CLIENT_DATA_DIR .. "/map_notes.backup.json",
+    storage = {
+        version = 1,
+        maps = {},
+    },
+}
+
 VisualFeatures.ESP = {
     configPath = CLIENT_DATA_DIR .. "/esp.json",
     hoveredPlayer = nil,
@@ -591,6 +600,155 @@ local SessionStats = {
 }
 local MapNotes = {}
 local MapNotes_NextID = 1
+
+function VisualFeatures.Notes3D.GetMapKey()
+    local mapName = string.lower(string.Trim(tostring(game.GetMap() or "")))
+    return mapName ~= "" and mapName or "unknown"
+end
+
+function VisualFeatures.Notes3D.SerializeNote(note)
+    if not istable(note) or not isvector(note.pos) then return nil end
+
+    local color = IsColor(note.color) and note.color or Color(0, 220, 255)
+    local text = string.Trim(tostring(note.text or ""))
+    if text == "" then return nil end
+
+    return {
+        id = math.max(1, math.floor(tonumber(note.id) or 1)),
+        pos = {
+            x = tonumber(note.pos.x) or 0,
+            y = tonumber(note.pos.y) or 0,
+            z = tonumber(note.pos.z) or 0,
+        },
+        text = string.sub(text, 1, 512),
+        color = {
+            r = math.Clamp(math.floor(tonumber(color.r) or 0), 0, 255),
+            g = math.Clamp(math.floor(tonumber(color.g) or 220), 0, 255),
+            b = math.Clamp(math.floor(tonumber(color.b) or 255), 0, 255),
+            a = math.Clamp(math.floor(tonumber(color.a) or 255), 0, 255),
+        },
+        maxDist = math.Clamp(
+            math.floor(tonumber(note.maxDist) or 2000),
+            100,
+            5000
+        ),
+    }
+end
+
+function VisualFeatures.Notes3D.DeserializeNote(row, fallbackID)
+    if not istable(row) or not istable(row.pos) then return nil end
+
+    local x = tonumber(row.pos.x)
+    local y = tonumber(row.pos.y)
+    local z = tonumber(row.pos.z)
+    if not x or not y or not z
+        or x ~= x or y ~= y or z ~= z
+        or math.abs(x) > 1000000
+        or math.abs(y) > 1000000
+        or math.abs(z) > 1000000
+    then
+        return nil
+    end
+
+    local text = string.Trim(tostring(row.text or ""))
+    if text == "" then return nil end
+
+    local storedColor = istable(row.color) and row.color or {}
+    return {
+        id = math.max(
+            1,
+            math.floor(tonumber(row.id) or tonumber(fallbackID) or 1)
+        ),
+        pos = Vector(x, y, z),
+        text = string.sub(text, 1, 512),
+        color = Color(
+            math.Clamp(math.floor(tonumber(storedColor.r) or 0), 0, 255),
+            math.Clamp(math.floor(tonumber(storedColor.g) or 220), 0, 255),
+            math.Clamp(math.floor(tonumber(storedColor.b) or 255), 0, 255),
+            math.Clamp(math.floor(tonumber(storedColor.a) or 255), 0, 255)
+        ),
+        maxDist = math.Clamp(
+            math.floor(tonumber(row.maxDist) or 2000),
+            100,
+            5000
+        ),
+    }
+end
+
+function VisualFeatures.Notes3D.Save()
+    local storage = VisualFeatures.Notes3D.storage
+    if not istable(storage) then storage = {} end
+    if not istable(storage.maps) then storage.maps = {} end
+    storage.version = 1
+
+    local savedNotes = {}
+    for _, note in ipairs(MapNotes) do
+        local serialized = VisualFeatures.Notes3D.SerializeNote(note)
+        if serialized then savedNotes[#savedNotes + 1] = serialized end
+    end
+
+    storage.maps[VisualFeatures.Notes3D.GetMapKey()] = {
+        nextID = math.max(1, math.floor(tonumber(MapNotes_NextID) or 1)),
+        notes = savedNotes,
+    }
+    VisualFeatures.Notes3D.storage = storage
+
+    file.CreateDir(CLIENT_DATA_DIR)
+    local encoded = util.TableToJSON(storage, true)
+    if not isstring(encoded) or encoded == "" then return false end
+
+    local previous = file.Read(VisualFeatures.Notes3D.configPath, "DATA")
+    if isstring(previous)
+        and previous ~= ""
+        and istable(util.JSONToTable(previous))
+    then
+        file.Write(VisualFeatures.Notes3D.backupPath, previous)
+    end
+    file.Write(VisualFeatures.Notes3D.configPath, encoded)
+    return true
+end
+
+function VisualFeatures.Notes3D.Load()
+    MapNotes = {}
+    MapNotes_NextID = 1
+
+    local raw = file.Read(VisualFeatures.Notes3D.configPath, "DATA")
+    local storage = raw and util.JSONToTable(raw) or nil
+    if not istable(storage) then
+        raw = file.Read(VisualFeatures.Notes3D.backupPath, "DATA")
+        storage = raw and util.JSONToTable(raw) or nil
+    end
+    if not istable(storage) then
+        storage = {
+            version = 1,
+            maps = {},
+        }
+    end
+    if not istable(storage.maps) then storage.maps = {} end
+    VisualFeatures.Notes3D.storage = storage
+
+    local bucket = storage.maps[VisualFeatures.Notes3D.GetMapKey()]
+    if not istable(bucket) or not istable(bucket.notes) then return false end
+
+    local highestID = 0
+    for index, row in ipairs(bucket.notes) do
+        local note = VisualFeatures.Notes3D.DeserializeNote(row, index)
+        if note then
+            MapNotes[#MapNotes + 1] = note
+            highestID = math.max(highestID, note.id)
+        end
+    end
+
+    MapNotes_NextID = math.max(
+        highestID + 1,
+        math.floor(tonumber(bucket.nextID) or 1),
+        1
+    )
+    return true
+end
+
+VisualFeatures.Notes3D.Load()
+
 local starField = {}
 local function InitStarField()
     starField = {}
@@ -3243,6 +3401,7 @@ function MultiTool_UnloadSelf(reason)
     VisualFeatures.PlayerTrail.Save()
     VisualFeatures.Killfeed.Save()
     VisualFeatures.ESP.Save()
+    VisualFeatures.Notes3D.Save()
     if SaveProcessedClientCommands then SaveProcessedClientCommands() end
     ClearBodyFXTrails()
     VisualFeatures.Weather.Clear()
@@ -3449,6 +3608,83 @@ function VisualFeatures.ESP.BuildOutlineGroups(lp)
     end
 
     return groups
+end
+
+function VisualFeatures.ESP.DrawHalos(groups)
+    if not halo or not isfunction(halo.Add) then return end
+
+    for _, group in ipairs(groups or {}) do
+        if istable(group.players) and #group.players > 0 then
+            halo.Add(
+                group.players,
+                group.color,
+                2,
+                2,
+                2,
+                true,
+                true
+            )
+        end
+    end
+end
+
+function VisualFeatures.ESP.DrawThroughWallHighlights(groups)
+    if not istable(groups) or #groups == 0 then return end
+
+    local previousBlend = render.GetBlend()
+    local previousRed, previousGreen, previousBlue =
+        render.GetColorModulation()
+    local modelFlags = bit.bor(
+        STUDIO_RENDER or 1,
+        STUDIO_SKIP_DECALS or 0
+    )
+    local drawError = nil
+
+    local success, message = xpcall(function()
+        cam.IgnoreZ(true)
+        render.MaterialOverride(VisualFeatures.ESP.outlineMaskMaterial)
+        render.SuppressEngineLighting(true)
+        render.SetBlend(0.22)
+
+        for _, group in ipairs(groups) do
+            local color = group.color or VisualFeatures.ESP.fallbackColor
+            render.SetColorModulation(
+                color.r / 255,
+                color.g / 255,
+                color.b / 255
+            )
+
+            for _, ply in ipairs(group.players or {}) do
+                if IsValid(ply) and not ply:GetNoDraw() then
+                    local modelSuccess, modelMessage =
+                        pcall(ply.DrawModel, ply, modelFlags)
+                    if not modelSuccess and not drawError then
+                        drawError = modelMessage
+                    end
+                end
+            end
+        end
+    end, debug.traceback)
+
+    cam.IgnoreZ(false)
+    render.MaterialOverride(nil)
+    render.SuppressEngineLighting(false)
+    render.SetColorModulation(
+        previousRed or 1,
+        previousGreen or 1,
+        previousBlue or 1
+    )
+    render.SetBlend(previousBlend or 1)
+
+    local errorMessage = not success and message or drawError
+    if errorMessage and not VisualFeatures.ESP.outlineErrorShown then
+        VisualFeatures.ESP.outlineErrorShown = true
+        ErrorNoHalt(
+            "[Unisono] ESP highlight render error: "
+                .. tostring(errorMessage)
+                .. "\n"
+        )
+    end
 end
 
 function VisualFeatures.ESP.ResetOutlineRenderState(blend, red, green, blue)
@@ -3830,15 +4066,23 @@ VisualFeatures.ESP.Load()
 
 hook.Add("Think", RuntimeHooks.ESP .. "_Hover", VisualFeatures.ESP.UpdateHoveredPlayer)
 
+hook.Add("PreDrawHalos", RuntimeHooks.ESP .. "_Halos", function()
+    if not ESP_Enabled or not VisualFeatures.ESP.HasAccess() then return end
+    local lp = LocalPlayer()
+    if not IsValid(lp) then return end
+
+    VisualFeatures.ESP.DrawHalos(VisualFeatures.ESP.BuildOutlineGroups(lp))
+end)
+
 hook.Add("PostDrawTranslucentRenderables", RuntimeHooks.ESP .. "_Outline", function(drawingDepth, drawingSkybox)
     if drawingDepth or drawingSkybox or not ESP_Enabled or not VisualFeatures.ESP.HasAccess() then return end
-    local view = render.GetViewSetup()
-    if view and view.viewid ~= nil and VIEW_MAIN ~= nil and view.viewid ~= VIEW_MAIN then return end
 
     local lp = LocalPlayer()
     if not IsValid(lp) then return end
 
-    VisualFeatures.ESP.DrawStencilOutlines(VisualFeatures.ESP.BuildOutlineGroups(lp))
+    VisualFeatures.ESP.DrawThroughWallHighlights(
+        VisualFeatures.ESP.BuildOutlineGroups(lp)
+    )
 end)
 
 hook.Add("PostDrawTranslucentRenderables", RuntimeHooks.ESP .. "_Gaze", function(_, drawingSkybox)
@@ -7005,6 +7249,7 @@ local function BuildNotesPanel()
             end)
             ULXButton(row, 405, 4, 50, 18, "Удал.", function()
                 table.remove(MapNotes, iLocal)
+                VisualFeatures.Notes3D.Save()
                 LogFeatureUsage("notes.remove", "Заметка #" .. tostring(noteLocal.id), "success")
                 RefreshNotesList()
                 Notify("Заметка удалена")
@@ -7017,6 +7262,7 @@ local function BuildNotesPanel()
                     local nt = string.Trim(e:GetValue())
                     if nt ~= "" then
                         noteLocal.text = nt
+                        VisualFeatures.Notes3D.Save()
                         LogFeatureUsage("notes.rename", "Заметка #" .. tostring(noteLocal.id), "success")
                         RefreshNotesList()
                         dlg:Close()
@@ -7059,6 +7305,7 @@ local function BuildNotesPanel()
         table.insert(MapNotes, { id=noteID, pos=lp:GetPos()+Vector(0,0,30), text=text,
             color=Color(selectedColor.r,selectedColor.g,selectedColor.b), maxDist=math.floor(sliderDist:GetValue()) })
         MapNotes_NextID = MapNotes_NextID + 1
+        VisualFeatures.Notes3D.Save()
         entryText:SetText("") RefreshNotesList()
         LogFeatureUsage("notes.create_here", "Заметка #" .. tostring(noteID), "success")
         Notify("Заметка добавлена")
@@ -7081,6 +7328,7 @@ local function BuildNotesPanel()
         table.insert(MapNotes, { id=noteID, pos=hitPos+Vector(0,0,10), text=text,
             color=Color(selectedColor.r,selectedColor.g,selectedColor.b), maxDist=math.floor(sliderDist:GetValue()) })
         MapNotes_NextID = MapNotes_NextID + 1
+        VisualFeatures.Notes3D.Save()
         entryText:SetText("") RefreshNotesList()
         LogFeatureUsage("notes.create_aim", "Заметка #" .. tostring(noteID), "success")
         Notify("Заметка по прицелу добавлена")
@@ -7093,6 +7341,8 @@ local function BuildNotesPanel()
         ULXButton(dlg, 40, 60, 100, 24, "Да", function()
             local removedCount = #MapNotes
             MapNotes = {}
+            MapNotes_NextID = 1
+            VisualFeatures.Notes3D.Save()
             LogFeatureUsage("notes.clear", "Удалено: " .. tostring(removedCount), "success")
             RefreshNotesList()
             dlg:Close()
@@ -7211,7 +7461,6 @@ local function BuildOopsPanel()
         VisualFeatures.Weather.Reset()
         VisualFeatures.PlayerTrail.Reset()
         VisualFeatures.Killfeed.Reset()
-        MapNotes = {}; MapNotes_NextID = 1
         SessionStats.Reset()
         if IsValid(g_SpawnMenu) and g_SpawnMenu.OriginalPaint then g_SpawnMenu.Paint = g_SpawnMenu.OriginalPaint end
     end)
@@ -7242,7 +7491,11 @@ local function BuildOopsPanel()
         ClearBodyFXTrails()
         SaveBodyFXConfig()
     end)
-    AddReset("Только заметки", "notes.clear", function() MapNotes = {}; MapNotes_NextID = 1 end)
+    AddReset("Только заметки", "notes.clear", function()
+        MapNotes = {}
+        MapNotes_NextID = 1
+        VisualFeatures.Notes3D.Save()
+    end)
 end
 
 -- 15.15 ТЕМЫ
