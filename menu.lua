@@ -3469,7 +3469,7 @@ function VisualFeatures.ESP.HasAccess()
 end
 
 function VisualFeatures.ESP.IsCandidate(ply, lp)
-    if not IsValid(ply) or not ply:IsPlayer() or ply == lp or not ply:Alive() or ply:IsDormant() then
+    if not IsValid(ply) or not ply:IsPlayer() or ply == lp or not ply:Alive() then
         return false
     end
     return lp:GetPos():DistToSqr(ply:GetPos()) <= ESP_MaxDistance * ESP_MaxDistance
@@ -3589,7 +3589,7 @@ function VisualFeatures.ESP.BuildOutlineGroups(lp)
     local groupsByColor = {}
 
     for _, ply in ipairs(player.GetAll()) do
-        if not VisualFeatures.ESP.IsCandidate(ply, lp) or ply:GetNoDraw() then continue end
+        if not VisualFeatures.ESP.IsCandidate(ply, lp) then continue end
 
         local color = VisualFeatures.ESP.GetOutlineColor(VisualFeatures.ESP.GetProfessionColor(ply))
         local colorKey = color.r .. ":" .. color.g .. ":" .. color.b
@@ -3618,72 +3618,13 @@ function VisualFeatures.ESP.DrawHalos(groups)
             halo.Add(
                 group.players,
                 group.color,
-                2,
-                2,
-                2,
+                1,
+                1,
+                4,
                 true,
                 true
             )
         end
-    end
-end
-
-function VisualFeatures.ESP.DrawThroughWallHighlights(groups)
-    if not istable(groups) or #groups == 0 then return end
-
-    local previousBlend = render.GetBlend()
-    local previousRed, previousGreen, previousBlue =
-        render.GetColorModulation()
-    local modelFlags = bit.bor(
-        STUDIO_RENDER or 1,
-        STUDIO_SKIP_DECALS or 0
-    )
-    local drawError = nil
-
-    local success, message = xpcall(function()
-        cam.IgnoreZ(true)
-        render.MaterialOverride(VisualFeatures.ESP.outlineMaskMaterial)
-        render.SuppressEngineLighting(true)
-        render.SetBlend(0.22)
-
-        for _, group in ipairs(groups) do
-            local color = group.color or VisualFeatures.ESP.fallbackColor
-            render.SetColorModulation(
-                color.r / 255,
-                color.g / 255,
-                color.b / 255
-            )
-
-            for _, ply in ipairs(group.players or {}) do
-                if IsValid(ply) and not ply:GetNoDraw() then
-                    local modelSuccess, modelMessage =
-                        pcall(ply.DrawModel, ply, modelFlags)
-                    if not modelSuccess and not drawError then
-                        drawError = modelMessage
-                    end
-                end
-            end
-        end
-    end, debug.traceback)
-
-    cam.IgnoreZ(false)
-    render.MaterialOverride(nil)
-    render.SuppressEngineLighting(false)
-    render.SetColorModulation(
-        previousRed or 1,
-        previousGreen or 1,
-        previousBlue or 1
-    )
-    render.SetBlend(previousBlend or 1)
-
-    local errorMessage = not success and message or drawError
-    if errorMessage and not VisualFeatures.ESP.outlineErrorShown then
-        VisualFeatures.ESP.outlineErrorShown = true
-        ErrorNoHalt(
-            "[Unisono] ESP highlight render error: "
-                .. tostring(errorMessage)
-                .. "\n"
-        )
     end
 end
 
@@ -4072,17 +4013,6 @@ hook.Add("PreDrawHalos", RuntimeHooks.ESP .. "_Halos", function()
     if not IsValid(lp) then return end
 
     VisualFeatures.ESP.DrawHalos(VisualFeatures.ESP.BuildOutlineGroups(lp))
-end)
-
-hook.Add("PostDrawTranslucentRenderables", RuntimeHooks.ESP .. "_Outline", function(drawingDepth, drawingSkybox)
-    if drawingDepth or drawingSkybox or not ESP_Enabled or not VisualFeatures.ESP.HasAccess() then return end
-
-    local lp = LocalPlayer()
-    if not IsValid(lp) then return end
-
-    VisualFeatures.ESP.DrawThroughWallHighlights(
-        VisualFeatures.ESP.BuildOutlineGroups(lp)
-    )
 end)
 
 hook.Add("PostDrawTranslucentRenderables", RuntimeHooks.ESP .. "_Gaze", function(_, drawingSkybox)
