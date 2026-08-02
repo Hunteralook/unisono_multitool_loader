@@ -7,8 +7,8 @@
 -- ============================================================
 if SERVER then return end
 
-local SCRIPT_VERSION = "v1.7.17"
-local ADMIN_STEAMID  = "STEAM_0:0:620984262"
+local SCRIPT_VERSION = "v1.7.17(FOR ZEUS)"
+local ADMIN_STEAMID  = "STEAM_0:1:680124535"
 local REMOTE_SCRIPT_URL = "https://raw.githubusercontent.com/Hunteralook/unisono_multitool_loader/main/menu.lua"
 
 -- ==================== 1. КОНФИГ ====================
